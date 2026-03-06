@@ -1,1081 +1,1319 @@
 "use client";
 
-import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { Suspense, useMemo, useRef, useState } from "react";
 import {
-  Background,
-  BackgroundVariant,
-  Controls,
-  Panel,
-  ReactFlow,
-  useEdgesState,
-  useNodesState,
-  type Edge,
-  type Node,
-  type NodeProps,
-} from "@xyflow/react";
+  Canvas,
+  type ThreeElements,
+  useFrame,
+  useThree,
+} from "@react-three/fiber";
+import {
+  ContactShadows,
+  Environment,
+  Html,
+  Instance,
+  Instances,
+  OrbitControls,
+  Sky,
+  useGLTF,
+  useTexture,
+} from "@react-three/drei";
 import Highcharts from "highcharts";
 import HighchartsReact from "highcharts-react-official";
-import "@xyflow/react/dist/style.css";
+import {
+  Box3,
+  PCFSoftShadowMap,
+  RepeatWrapping,
+  SRGBColorSpace,
+  Vector3,
+  type Group,
+  type Material,
+  type Mesh,
+} from "three";
+import type { GLTF } from "three-stdlib";
 import { generateMinuteLevelData } from "@/utils";
 
-const NCU_COUNT = 155;
-const STORAGE_COUNT = 10;
-const NCU_CLUSTER_COUNT = 6;
-const NCU_CLUSTER_LAYOUT_COLUMNS = 3;
-const NCU_CLUSTER_LAYOUT_ROWS = 2;
-const MAX_NCU_LABEL_CHARS = `N${NCU_COUNT}`.length;
-const NCU_NODE_MIN_WIDTH = 88;
-const NCU_NODE_WIDTH = Math.max(NCU_NODE_MIN_WIDTH, 44 + MAX_NCU_LABEL_CHARS * 12);
-const NCU_NODE_HEIGHT = 52;
-const NCU_GAP_X = 14;
-const NCU_GAP_Y = 12;
-const NCU_PITCH_X = NCU_NODE_WIDTH + NCU_GAP_X;
-const NCU_PITCH_Y = NCU_NODE_HEIGHT + NCU_GAP_Y;
-const NCU_CLUSTER_GAP_X = 56;
-const NCU_CLUSTER_GAP_Y = 56;
+const MODEL2_MATRIX = {
+  rows: 3,
+  cols: 5,
+};
 
-const STORAGE_NODE_WIDTH = NCU_NODE_WIDTH * 2;
-const STORAGE_NODE_HEIGHT = NCU_NODE_HEIGHT * 2;
-const STORAGE_GAP_X = 20;
-const STORAGE_PITCH_X = STORAGE_NODE_WIDTH + STORAGE_GAP_X;
-const STORAGE_OFFSET_Y = 132;
-const STORAGE_LAYOUT_COLUMNS = 5;
-const STORAGE_FACE_TO_FACE_GAP_Y = 36;
+const CLUSTER_COUNT = 3;
+const MODEL2_HORIZONTAL_GROUP_COUNT = 3;
+const MODEL1_TARGET_COUNT = 10;
+const MODEL1_SCALE = 3;
+const MODEL2_SCALE = 0.25;
+const MODEL2_INNER_SPACING_FACTOR = 1.08;
+const MATRIX_GROUP_SPACING_FACTOR = 1.05;
+const CLUSTER_SPACING_FACTOR = 1.25;
+const MODEL1_MATRIX_SEPARATION_FACTOR = 1.15;
 
-type DeviceStatus = "normal" | "warning" | "error";
-type StatusMode = "normal" | "demo";
-type VisualTheme = "night" | "day";
+const SCENE_PRESETS = {
+  midday: {
+    name: "白天航拍",
+    background: "#e8f4ff",
+    fogNear: 45,
+    fogFar: 180,
+    sunPosition: [140, 55, 80] as [number, number, number],
+    sky: { turbidity: 2.2, rayleigh: 2.4 },
+    ambientIntensity: 0.95,
+    directionalIntensity: 2.8,
+    directionalColor: "#fff7e6",
+    directionalPosition: [20, 30, 16] as [number, number, number],
+    shadow: {
+      mapSize: 2048,
+      cameraNear: 1,
+      cameraFar: 180,
+      cameraBounds: 65,
+      bias: -0.00015,
+      normalBias: 0.015,
+    },
+    hemisphereSky: "#dff1ff",
+    hemisphereGround: "#73808f",
+    hemisphereIntensity: 0.82,
+    environment: "city" as const,
+    groundColor: "#dbe3ec",
+    contactShadow: { opacity: 0.55, scale: 90, blur: 2.8, far: 45 },
+  },
+  sunset: {
+    name: "傍晚暖光",
+    background: "#ffe9d7",
+    fogNear: 30,
+    fogFar: 120,
+    sunPosition: [72, 14, 45] as [number, number, number],
+    sky: { turbidity: 5.2, rayleigh: 1.5 },
+    ambientIntensity: 0.45,
+    directionalIntensity: 2.35,
+    directionalColor: "#ffb56e",
+    directionalPosition: [12, 18, 14] as [number, number, number],
+    shadow: {
+      mapSize: 1024,
+      cameraNear: 1,
+      cameraFar: 140,
+      cameraBounds: 55,
+      bias: -0.00014,
+      normalBias: 0.014,
+    },
+    hemisphereSky: "#ffd7b4",
+    hemisphereGround: "#6f6561",
+    hemisphereIntensity: 0.65,
+    environment: "sunset" as const,
+    groundColor: "#d6d0ca",
+    contactShadow: { opacity: 0.72, scale: 100, blur: 2.2, far: 55 },
+  },
+};
 
-interface TopologyNodeData extends Record<string, unknown> {
-  kind: "ncu" | "storage";
-  label: string;
-  status?: DeviceStatus;
-  temperature?: number;
-  hasWorkOrder?: boolean;
+type ScenePresetKey = keyof typeof SCENE_PRESETS;
+type ScenePreset = (typeof SCENE_PRESETS)[ScenePresetKey];
+
+export interface SiteDashboardData {
+  siteName: string;
+  location: string;
+  capacity: string;
+  weather: string;
+  hasWarning: boolean;
+  pvPowerMw: number;
+  storagePowerMw: number;
+  loadPowerMw: number;
+  gridPowerMw: number;
+  treeEquivalent: number;
+  co2ReductionTons: number;
+  arbitrageIncome: number;
 }
 
-interface DeviceNodeComponentProps extends NodeProps {
-  theme: VisualTheme;
-}
-
-interface SiteTopologyFlowProps {
-  fullScreen?: boolean;
-}
-
-const WARNING_RATE = 0.01;
-const ERROR_RATE = 0.005;
-
-function getStatusStyle(status: DeviceStatus, theme: VisualTheme = "night") {
-  if (theme === "day") {
-    if (status === "error") {
-      return {
-        border: "#ef4444",
-        bg: "linear-gradient(180deg, #fee2e2, #fecaca)",
-        text: "#b91c1c",
-        glow: "rgba(239,68,68,0.2)",
-        miniMap: "#ef4444",
-        miniMapStroke: "#b91c1c",
-      };
-    }
-
-    if (status === "warning") {
-      return {
-        border: "#f59e0b",
-        bg: "linear-gradient(180deg, #fef3c7, #fde68a)",
-        text: "#a16207",
-        glow: "rgba(245,158,11,0.2)",
-        miniMap: "#f59e0b",
-        miniMapStroke: "#a16207",
-      };
-    }
-
-    return {
-      border: "#22c55e",
-      bg: "linear-gradient(180deg, #dcfce7, #bbf7d0)",
-      text: "#166534",
-      glow: "rgba(34,197,94,0.18)",
-      miniMap: "#22c55e",
-      miniMapStroke: "#166534",
-    };
-  }
-
-  if (status === "error") {
-    return {
-      border: "#ef4444",
-      bg: "linear-gradient(180deg, rgba(127,29,29,0.45), rgba(69,10,10,0.72))",
-      text: "#fecaca",
-      glow: "rgba(239,68,68,0.42)",
-      miniMap: "#ef4444",
-      miniMapStroke: "#fca5a5",
-    };
-  }
-
-  if (status === "warning") {
-    return {
-      border: "#f59e0b",
-      bg: "linear-gradient(180deg, rgba(120,53,15,0.42), rgba(69,26,3,0.72))",
-      text: "#fde68a",
-      glow: "rgba(245,158,11,0.4)",
-      miniMap: "#f59e0b",
-      miniMapStroke: "#fcd34d",
-    };
-  }
-
-  return {
-    border: "#22c55e",
-    bg: "linear-gradient(180deg, rgba(20,83,45,0.36), rgba(5,46,22,0.74))",
-    text: "#bbf7d0",
-    glow: "rgba(34,197,94,0.36)",
-    miniMap: "#22c55e",
-    miniMapStroke: "#86efac",
+type Model1GLTFResult = GLTF & {
+  nodes: {
+    node_0: Mesh;
   };
-}
-
-function getStorageTemperatureStyle(temperature: number, theme: VisualTheme = "night") {
-  if (theme === "day") {
-    if (temperature > 80) {
-      return {
-        border: "#ef4444",
-        bg: "linear-gradient(180deg, #fee2e2, #fecaca)",
-        text: "#b91c1c",
-        glow: "rgba(239,68,68,0.22)",
-        miniMap: "#ef4444",
-        miniMapStroke: "#b91c1c",
-      };
-    }
-
-    if (temperature >= 60) {
-      return {
-        border: "#f59e0b",
-        bg: "linear-gradient(180deg, #fef3c7, #fde68a)",
-        text: "#a16207",
-        glow: "rgba(245,158,11,0.2)",
-        miniMap: "#f59e0b",
-        miniMapStroke: "#a16207",
-      };
-    }
-
-    if (temperature >= 30) {
-      return {
-        border: "#eab308",
-        bg: "linear-gradient(180deg, #fef9c3, #fef08a)",
-        text: "#854d0e",
-        glow: "rgba(234,179,8,0.2)",
-        miniMap: "#eab308",
-        miniMapStroke: "#854d0e",
-      };
-    }
-
-    return {
-      border: "#3b82f6",
-      bg: "linear-gradient(180deg, #dbeafe, #bfdbfe)",
-      text: "#1d4ed8",
-      glow: "rgba(59,130,246,0.2)",
-      miniMap: "#3b82f6",
-      miniMapStroke: "#1d4ed8",
-    };
-  }
-
-  if (temperature > 80) {
-    return {
-      border: "#ef4444",
-      bg: "linear-gradient(180deg, rgba(127,29,29,0.5), rgba(69,10,10,0.76))",
-      text: "#fecaca",
-      glow: "rgba(239,68,68,0.48)",
-      miniMap: "#ef4444",
-      miniMapStroke: "#fca5a5",
-    };
-  }
-
-  if (temperature >= 60) {
-    return {
-      border: "#f59e0b",
-      bg: "linear-gradient(180deg, rgba(120,53,15,0.46), rgba(69,26,3,0.78))",
-      text: "#fde68a",
-      glow: "rgba(245,158,11,0.42)",
-      miniMap: "#f59e0b",
-      miniMapStroke: "#fcd34d",
-    };
-  }
-
-  if (temperature >= 30) {
-    return {
-      border: "#eab308",
-      bg: "linear-gradient(180deg, rgba(113,63,18,0.42), rgba(66,32,6,0.74))",
-      text: "#fef08a",
-      glow: "rgba(234,179,8,0.42)",
-      miniMap: "#eab308",
-      miniMapStroke: "#fde047",
-    };
-  }
-
-  return {
-    border: "#3b82f6",
-    bg: "linear-gradient(180deg, rgba(30,58,138,0.44), rgba(23,37,84,0.78))",
-    text: "#bfdbfe",
-    glow: "rgba(59,130,246,0.44)",
-    miniMap: "#3b82f6",
-    miniMapStroke: "#93c5fd",
+  materials: {
+    "Material.001": Material;
   };
-}
+};
 
-function pseudoRandom(seed: number) {
-  const value = Math.sin(seed) * 10000;
-  return value - Math.floor(value);
-}
+type Model2GLTFResult = GLTF & {
+  nodes: {
+    Panel_solar__2__concrete_0: Mesh;
+    Panel_solar__2__steel_0: Mesh;
+    Panel_solar__2__paint_0: Mesh;
+    Panel_solar__2__black_plastic_0: Mesh;
+    Panel_solar__2__plastic_red_0: Mesh;
+    Panel_solar__2__gum_0: Mesh;
+    Panel_solar__2___05___Default_0: Mesh;
+    Panel_solar__2__Material__3971_Slot__8_0: Mesh;
+    Panel_solar__2__al_0: Mesh;
+  };
+  materials: {
+    concrete: Material;
+    steel: Material;
+    paint: Material;
+    black_plastic: Material;
+    plastic_red: Material;
+    material: Material;
+    "05___Default": Material;
+    Material__3971_Slot__8: Material;
+    material_8: Material;
+  };
+};
 
-function createStatusArray(count: number, mode: StatusMode, seedBase: number) {
-  if (mode === "normal") {
-    return Array.from({ length: count }, () => "normal" as const);
-  }
+const MODEL2_MESHES: Array<{
+  node: keyof Model2GLTFResult["nodes"];
+  material: keyof Model2GLTFResult["materials"];
+}> = [
+  { node: "Panel_solar__2__concrete_0", material: "concrete" },
+  { node: "Panel_solar__2__steel_0", material: "steel" },
+  { node: "Panel_solar__2__paint_0", material: "paint" },
+  { node: "Panel_solar__2__black_plastic_0", material: "black_plastic" },
+  { node: "Panel_solar__2__plastic_red_0", material: "plastic_red" },
+  { node: "Panel_solar__2__gum_0", material: "material" },
+  { node: "Panel_solar__2___05___Default_0", material: "05___Default" },
+  {
+    node: "Panel_solar__2__Material__3971_Slot__8_0",
+    material: "Material__3971_Slot__8",
+  },
+  { node: "Panel_solar__2__al_0", material: "material_8" },
+];
 
-  return Array.from({ length: count }, (_, index) => {
-    const value = pseudoRandom(seedBase + index * 97 + 13);
-
-    if (value < ERROR_RATE) {
-      return "error" as const;
-    }
-
-    if (value < ERROR_RATE + WARNING_RATE) {
-      return "warning" as const;
-    }
-
-    return "normal" as const;
-  });
-}
-
-function createStorageTemperatures(mode: StatusMode, seedBase: number) {
-  if (mode === "normal") {
-    return Array.from({ length: STORAGE_COUNT }, () => 45);
-  }
-
-  return Array.from({ length: STORAGE_COUNT }, (_, index) => {
-    const value = pseudoRandom(seedBase + index * 53 + 7);
-    return Math.round(10 + value * 85);
-  });
-}
-
-function createTopologyNodes(ncuStatuses: DeviceStatus[], storageTemperatures: number[]) {
-  const nodes: Node<TopologyNodeData>[] = [];
-  const baseClusterSize = Math.floor(NCU_COUNT / NCU_CLUSTER_COUNT);
-  const extraNodeCount = NCU_COUNT % NCU_CLUSTER_COUNT;
-  const clusterSizes = Array.from({ length: NCU_CLUSTER_COUNT }, (_, clusterIndex) =>
-    baseClusterSize + (clusterIndex < extraNodeCount ? 1 : 0),
-  );
-  const clusterShapes = clusterSizes.map((size) => {
-    const cols = Math.ceil(Math.sqrt(size));
-    const rows = Math.ceil(size / cols);
-    const width = (cols - 1) * NCU_PITCH_X + NCU_NODE_WIDTH;
-    const height = (rows - 1) * NCU_PITCH_Y + NCU_NODE_HEIGHT;
-
-    return { size, cols, rows, width, height };
-  });
-
-  const columnWidths = Array.from({ length: NCU_CLUSTER_LAYOUT_COLUMNS }, (_, col) =>
-    Math.max(
-      ...clusterShapes
-        .filter((_, clusterIndex) => clusterIndex % NCU_CLUSTER_LAYOUT_COLUMNS === col)
-        .map((shape) => shape.width),
-    ),
-  );
-  const rowHeights = Array.from({ length: NCU_CLUSTER_LAYOUT_ROWS }, (_, row) =>
-    Math.max(
-      ...clusterShapes
-        .filter((_, clusterIndex) => Math.floor(clusterIndex / NCU_CLUSTER_LAYOUT_COLUMNS) === row)
-        .map((shape) => shape.height),
-    ),
-  );
-
-  let ncuStartIndex = 0;
-  for (let clusterIndex = 0; clusterIndex < NCU_CLUSTER_COUNT; clusterIndex += 1) {
-    const clusterShape = clusterShapes[clusterIndex];
-    const layoutCol = clusterIndex % NCU_CLUSTER_LAYOUT_COLUMNS;
-    const layoutRow = Math.floor(clusterIndex / NCU_CLUSTER_LAYOUT_COLUMNS);
-    const clusterOffsetX =
-      columnWidths.slice(0, layoutCol).reduce((acc, width) => acc + width, 0) + layoutCol * NCU_CLUSTER_GAP_X;
-    const clusterOffsetY =
-      rowHeights.slice(0, layoutRow).reduce((acc, height) => acc + height, 0) + layoutRow * NCU_CLUSTER_GAP_Y;
-
-    for (let localIndex = 0; localIndex < clusterShape.size; localIndex += 1) {
-      const globalIndex = ncuStartIndex + localIndex;
-      const row = Math.floor(localIndex / clusterShape.cols);
-      const col = localIndex % clusterShape.cols;
-      const status = ncuStatuses[globalIndex];
-
-      nodes.push({
-        id: `ncu-${globalIndex + 1}`,
-        type: "device",
-        position: {
-          x: clusterOffsetX + col * NCU_PITCH_X,
-          y: clusterOffsetY + row * NCU_PITCH_Y,
-        },
-        data: { kind: "ncu", label: `N${globalIndex + 1}`, status, hasWorkOrder: status === "error" },
-        style: {
-          width: NCU_NODE_WIDTH,
-          height: NCU_NODE_HEIGHT,
-        },
-        selectable: false,
-        draggable: false,
-      });
-    }
-
-    ncuStartIndex += clusterShape.size;
-  }
-
-  const ncuNodes = nodes.filter((node) => node.id.startsWith("ncu-"));
-  const ncuMinX = Math.min(...ncuNodes.map((node) => node.position.x));
-  const ncuMaxX = Math.max(...ncuNodes.map((node) => node.position.x + NCU_NODE_WIDTH));
-  const ncuMaxY = Math.max(...ncuNodes.map((node) => node.position.y + NCU_NODE_HEIGHT));
-  const matrixCenterX = (ncuMinX + ncuMaxX) / 2;
-  const storageTopRowY = ncuMaxY + STORAGE_OFFSET_Y;
-  const storageStartCenterX = matrixCenterX - ((STORAGE_LAYOUT_COLUMNS - 1) * STORAGE_PITCH_X) / 2;
-
-  for (let index = 0; index < STORAGE_COUNT; index += 1) {
-    const row = Math.floor(index / STORAGE_LAYOUT_COLUMNS);
-    const columnIndexInRow = index % STORAGE_LAYOUT_COLUMNS;
-    const mirroredColumn = row === 1 ? STORAGE_LAYOUT_COLUMNS - 1 - columnIndexInRow : columnIndexInRow;
-    const centerX = storageStartCenterX + mirroredColumn * STORAGE_PITCH_X;
-    const rowOffsetY = row * (STORAGE_NODE_HEIGHT + STORAGE_FACE_TO_FACE_GAP_Y);
-    const rowY = storageTopRowY + rowOffsetY;
-    const temperature = storageTemperatures[index];
-
-    nodes.push({
-      id: `storage-${index + 1}`,
-      type: "device",
-      position: { x: centerX - STORAGE_NODE_WIDTH / 2, y: rowY },
-      data: {
-        kind: "storage",
-        label: `储能电柜-${String(index + 1).padStart(2, "0")}`,
-        temperature,
-      },
-      style: {
-        width: STORAGE_NODE_WIDTH,
-        height: STORAGE_NODE_HEIGHT,
-      },
-      selectable: false,
-      draggable: false,
-    });
-  }
-
-  return nodes;
-}
-
-function createTopologyEdges() {
-  const edges: Edge[] = [];
-  return edges;
-}
-
-function createMetricChartOptions({
+function createTrendOptions({
   title,
   unit,
+  color,
   data,
   categories,
-  color,
   isDay,
-  chartHeight = 184,
+  height = 190,
 }: {
   title: string;
   unit: string;
+  color: string;
   data: number[];
   categories: string[];
-  color: string;
   isDay: boolean;
-  chartHeight?: number;
+  height?: number;
 }): Highcharts.Options {
   const midIndex = Math.floor(categories.length / 2);
 
   return {
     chart: {
       type: "areaspline",
+      height,
       backgroundColor: "transparent",
-      spacing: [8, 8, 10, 8],
-      height: chartHeight,
+      spacing: [8, 8, 8, 8],
       animation: false,
-      style: {
-        fontFamily: "Inter, Segoe UI, sans-serif",
-      },
     },
-    title: {
-      text: undefined,
-    },
-    credits: {
-      enabled: false,
-    },
-    legend: {
-      enabled: false,
-    },
+    title: { text: undefined },
+    credits: { enabled: false },
+    legend: { enabled: false },
     xAxis: {
       categories,
       tickPositions: [0, midIndex, categories.length - 1],
-      lineColor: isDay ? "rgba(100,116,139,0.35)" : "rgba(148,163,184,0.28)",
       tickLength: 0,
+      lineColor: isDay ? "rgba(100,116,139,0.3)" : "rgba(234,88,12,0.22)",
       labels: {
-        style: {
-          color: isDay ? "#475569" : "#94a3b8",
-          fontSize: "10px",
-        },
+        style: { color: isDay ? "#475569" : "#9a3412", fontSize: "10px" },
       },
-      gridLineColor: "transparent",
     },
     yAxis: {
-      title: {
-        text: undefined,
-      },
-      gridLineWidth: 1,
+      title: { text: undefined },
       gridLineDashStyle: "ShortDash",
-      gridLineColor: isDay ? "rgba(100,116,139,0.25)" : "rgba(148,163,184,0.22)",
+      gridLineColor: isDay ? "rgba(100,116,139,0.2)" : "rgba(217,119,6,0.2)",
       labels: {
-        style: {
-          color: isDay ? "#64748b" : "#94a3b8",
-          fontSize: "10px",
-        },
+        style: { color: isDay ? "#64748b" : "#9a3412", fontSize: "10px" },
       },
-      endOnTick: false,
-      startOnTick: true,
     },
     tooltip: {
       shared: true,
-      backgroundColor: isDay ? "rgba(255,255,255,0.96)" : "rgba(15,23,42,0.92)",
-      borderColor: isDay ? "rgba(148,163,184,0.65)" : "rgba(71,85,105,0.65)",
-      style: {
-        color: isDay ? "#0f172a" : "#e2e8f0",
-      },
+      backgroundColor: isDay
+        ? "rgba(255,255,255,0.96)"
+        : "rgba(255,247,237,0.96)",
+      borderColor: isDay ? "rgba(14,116,144,0.35)" : "rgba(234,88,12,0.35)",
       valueSuffix: ` ${unit}`,
-      headerFormat: '<span style="font-size:11px">{point.key}</span><br/>',
-      pointFormat: `<span style="color:${color}">●</span> ${title}: <b>{point.y:.1f} ${unit}</b><br/>`,
     },
     plotOptions: {
       areaspline: {
         lineWidth: 2,
         color,
-        marker: {
-          enabled: false,
-        },
+        marker: { enabled: false },
         fillOpacity: 0.2,
       },
-      series: {
-        animation: false,
-      },
     },
-    series: [
-      {
-        type: "areaspline",
-        name: title,
-        data,
-        color,
-      },
-    ],
+    series: [{ type: "areaspline", name: title, data, color }],
   };
 }
 
-function createStorageRuntimeOptions({
-  categories,
-  onlineData,
-  standbyData,
-  faultData,
-  isDay,
-  chartHeight = 184,
-}: {
-  categories: string[];
-  onlineData: number[];
-  standbyData: number[];
-  faultData: number[];
-  isDay: boolean;
-  chartHeight?: number;
-}): Highcharts.Options {
-  const midIndex = Math.floor(categories.length / 2);
-
-  return {
-    chart: {
-      type: "column",
-      backgroundColor: "transparent",
-      spacing: [8, 8, 10, 8],
-      height: chartHeight,
-      animation: false,
-      style: {
-        fontFamily: "Inter, Segoe UI, sans-serif",
-      },
-    },
-    title: {
-      text: undefined,
-    },
-    credits: {
-      enabled: false,
-    },
-    xAxis: {
-      categories,
-      tickPositions: [0, midIndex, categories.length - 1],
-      lineColor: isDay ? "rgba(100,116,139,0.35)" : "rgba(148,163,184,0.28)",
-      tickLength: 0,
-      labels: {
-        style: {
-          color: isDay ? "#475569" : "#94a3b8",
-          fontSize: "10px",
-        },
-      },
-      gridLineColor: "transparent",
-    },
-    yAxis: {
-      title: {
-        text: undefined,
-      },
-      gridLineWidth: 1,
-      gridLineDashStyle: "ShortDash",
-      gridLineColor: isDay ? "rgba(100,116,139,0.25)" : "rgba(148,163,184,0.22)",
-      labels: {
-        style: {
-          color: isDay ? "#64748b" : "#94a3b8",
-          fontSize: "10px",
-        },
-      },
-      max: STORAGE_COUNT,
-      min: 0,
-      tickInterval: 2,
-      stackLabels: {
-        enabled: false,
-      },
-    },
-    tooltip: {
-      shared: true,
-      backgroundColor: isDay ? "rgba(255,255,255,0.96)" : "rgba(15,23,42,0.92)",
-      borderColor: isDay ? "rgba(148,163,184,0.65)" : "rgba(71,85,105,0.65)",
-      style: {
-        color: isDay ? "#0f172a" : "#e2e8f0",
-      },
-      headerFormat: '<span style="font-size:11px">{point.key}</span><br/>',
-    },
-    legend: {
-      enabled: true,
-      itemStyle: {
-        color: isDay ? "#334155" : "#cbd5e1",
-        fontSize: "10px",
-        fontWeight: "500",
-      },
-      symbolRadius: 2,
-      symbolHeight: 8,
-      symbolWidth: 10,
-    },
-    plotOptions: {
-      column: {
-        stacking: "normal",
-        borderWidth: 0,
-        pointPadding: 0.05,
-        groupPadding: 0.08,
-      },
-      series: {
-        animation: false,
-      },
-    },
-    series: [
-      {
-        type: "column",
-        name: "在线",
-        data: onlineData,
-        color: isDay ? "#22c55e" : "#4ade80",
-      },
-      {
-        type: "column",
-        name: "待机",
-        data: standbyData,
-        color: isDay ? "#0ea5e9" : "#38bdf8",
-      },
-      {
-        type: "column",
-        name: "异常",
-        data: faultData,
-        color: isDay ? "#ef4444" : "#f87171",
-      },
-    ],
-  };
+function Loader() {
+  return (
+    <Html center>
+      <div className="rounded-md border border-sky-300/70 bg-white/90 px-3 py-1.5 text-xs font-medium text-slate-700">
+        3D 场景加载中...
+      </div>
+    </Html>
+  );
 }
 
-const DeviceNode = memo(function DeviceNode({ data, theme }: DeviceNodeComponentProps) {
-  const nodeData = data as TopologyNodeData;
-  const isStorage = nodeData.kind === "storage";
-  const hasWorkOrderBadge = !isStorage && nodeData.hasWorkOrder;
-  const style = isStorage
-    ? getStorageTemperatureStyle(nodeData.temperature ?? 45, theme)
-    : getStatusStyle(nodeData.status ?? "normal", theme);
-
-  const mainLabelStyle = isStorage
-    ? {
-        fontSize: "clamp(10px, 0.85vw, 12px)",
-        lineHeight: 1.15,
-      }
-    : {
-        fontSize: "clamp(12px, 1vw, 16px)",
-        lineHeight: 1.05,
-        letterSpacing: "0.02em",
-      };
+function Ground({ color }: { color: string }) {
+  const { gl } = useThree();
+  const map = useTexture("/land.png", (loadedMap) => {
+    loadedMap.wrapS = RepeatWrapping;
+    loadedMap.wrapT = RepeatWrapping;
+    loadedMap.repeat.set(32, 32);
+    loadedMap.colorSpace = SRGBColorSpace;
+    loadedMap.anisotropy = Math.min(16, gl.capabilities.getMaxAnisotropy());
+    loadedMap.needsUpdate = true;
+  });
 
   return (
-    <div
-      className={`relative flex h-full w-full items-center justify-center overflow-hidden rounded-[10px] border ${
-        hasWorkOrderBadge ? "cursor-pointer" : ""
-      }`}
-      style={{
-        borderColor: style.border,
-        background: style.bg,
-        color: style.text,
-        boxShadow: `0 0 0 1px ${style.border} inset, 0 0 18px ${style.glow}`,
-      }}
+    <mesh
+      rotation={[-Math.PI / 2, 0, 0]}
+      position={[0, -0.03, 0]}
+      receiveShadow
     >
-      <div
-        className={`absolute top-1 left-2 text-[9px] font-semibold tracking-[0.08em] ${
-          theme === "day" ? "text-slate-700/70" : "text-slate-200/75"
-        }`}
-      >
-        {isStorage ? "BESS" : "NCU"}
-      </div>
-      {hasWorkOrderBadge ? (
-        <div
-          className={`absolute top-1 right-1 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[9px] font-bold ${
-            theme === "day" ? "bg-red-500 text-white" : "bg-red-400 text-slate-950"
-          }`}
-          title="维护工单 1 条"
+      <planeGeometry args={[240, 240]} />
+      <meshStandardMaterial
+        map={map}
+        color={color}
+        roughness={0.9}
+        metalness={0.02}
+      />
+    </mesh>
+  );
+}
+
+function Model1(props: ThreeElements["group"]) {
+  const { nodes, materials } = useGLTF("/1.glb") as unknown as Model1GLTFResult;
+
+  return (
+    <group {...props} dispose={null}>
+      <mesh
+        geometry={nodes.node_0.geometry}
+        material={materials["Material.001"]}
+        rotation={[Math.PI / 2, 0, 0]}
+        castShadow
+        receiveShadow
+      />
+    </group>
+  );
+}
+
+function Model2Instanced({
+  positions,
+  scale,
+}: {
+  positions: [number, number, number][];
+  scale: number;
+}) {
+  const { nodes, materials } = useGLTF("/2.glb") as unknown as Model2GLTFResult;
+  const finalScale = scale * 1.66664;
+
+  return (
+    <group dispose={null}>
+      {MODEL2_MESHES.map(({ node, material }) => (
+        <Instances
+          key={node}
+          geometry={nodes[node].geometry}
+          material={materials[material]}
+          castShadow
+          receiveShadow
+          frustumCulled
         >
-          1
-        </div>
-      ) : null}
-      <div
-        className={`max-w-[95%] truncate text-center font-semibold tracking-wide ${
-          isStorage ? "pt-2 text-[11px]" : "pt-3 text-[13px]"
-        }`}
-        style={mainLabelStyle}
-      >
-        {nodeData.label}
-      </div>
-      <div className="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full" style={{ backgroundColor: style.border }} />
-    </div>
+          {positions.map((position, idx) => (
+            <Instance
+              key={`${node}-${idx}`}
+              position={position}
+              rotation={[0, Math.PI / 2, 0]}
+              scale={finalScale}
+            />
+          ))}
+        </Instances>
+      ))}
+    </group>
   );
-});
+}
 
-export default function SiteTopologyFlow({ fullScreen = false }: SiteTopologyFlowProps) {
-  const [statusMode, setStatusMode] = useState<StatusMode>("normal");
-  const [refreshNonce, setRefreshNonce] = useState(0);
-  const [visualTheme, setVisualTheme] = useState<VisualTheme>("day");
-  const router = useRouter();
-  const params = useParams<{ siteId?: string | string[] }>();
-  const chartsContainerRef = useRef<HTMLElement | null>(null);
-  const [chartHeight, setChartHeight] = useState(170);
-  const siteId = useMemo(() => {
-    if (!params?.siteId) {
-      return "alpha";
-    }
+function Scene({ preset }: { preset: ScenePreset }) {
+  const model1Ref = useRef<null | Group>(null);
+  const model2SampleRef = useRef<null | Group>(null);
+  const model2Scene = (useGLTF("/2.glb") as GLTF).scene;
+  const [layout, setLayout] = useState({
+    spacingX: 5,
+    spacingZ: 5,
+    matrixGroupSpacingX: 18,
+    model1X: -12,
+    clusterSpacingZ: 18,
+  });
+  const [isLayoutLocked, setIsLayoutLocked] = useState(false);
 
-    return Array.isArray(params.siteId) ? params.siteId[0] : params.siteId;
-  }, [params]);
-
-  const topology = useMemo(() => {
-    const ncuStatuses = createStatusArray(NCU_COUNT, statusMode, refreshNonce * 1000 + 101);
-    const storageTemperatures = createStorageTemperatures(statusMode, refreshNonce * 1000 + 707);
-
-    return {
-      nodes: createTopologyNodes(ncuStatuses, storageTemperatures),
-      edges: createTopologyEdges(),
-    };
-  }, [statusMode, refreshNonce]);
-
-  const [nodes, setNodes, onNodesChange] = useNodesState(topology.nodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(topology.edges);
-
-  useEffect(() => {
-    setNodes(topology.nodes);
-    setEdges(topology.edges);
-  }, [setEdges, setNodes, topology.edges, topology.nodes]);
-
-  const nodeTypes = useMemo(
-    () => ({
-      device: (props: NodeProps) => <DeviceNode {...props} theme={visualTheme} />,
-    }),
-    [visualTheme],
-  );
-
-  const ncuStatusSummary = useMemo(() => {
-    return nodes
-      .filter((node) => node.id.startsWith("ncu-"))
-      .reduce(
-        (acc, node) => {
-          const status = (node.data?.status as DeviceStatus) ?? "normal";
-          acc[status] += 1;
-          return acc;
-        },
-        { normal: 0, warning: 0, error: 0 },
-      );
-  }, [nodes]);
-
-  const storageTempSummary = useMemo(() => {
-    return nodes.filter((node) => node.id.startsWith("storage-")).reduce(
-      (acc, node) => {
-        const temperature = (node.data?.temperature as number) ?? 45;
-
-        if (temperature > 80) {
-          acc.red += 1;
-        } else if (temperature >= 60) {
-          acc.orange += 1;
-        } else if (temperature >= 30) {
-          acc.yellow += 1;
-        } else {
-          acc.blue += 1;
-        }
-
-        return acc;
-      },
-      { red: 0, orange: 0, yellow: 0, blue: 0 },
-    );
-  }, [nodes]);
-
-  const minuteData = useMemo(() => generateMinuteLevelData(), []);
-  const sampledData = useMemo(() => {
-    return minuteData.filter((_, index) => index % 5 === 0 || index === minuteData.length - 1);
-  }, [minuteData]);
-  const chartCategories = useMemo(() => sampledData.map((point) => point.time), [sampledData]);
-  const irradianceSeries = useMemo(() => sampledData.map((point) => point.irradiance), [sampledData]);
-  const windSeries = useMemo(() => sampledData.map((point) => point.windSpeed), [sampledData]);
-  const generationSeries = useMemo(() => {
-    return sampledData.map((point, index) => {
-      const irradianceRatio = point.irradiance / 1000;
-      const loadFactor = 0.94 + 0.06 * Math.sin(index / 9);
-      return Number(Math.max(0, irradianceRatio * 62 * loadFactor).toFixed(2));
-    });
-  }, [sampledData]);
-  const storageRuntimeSeries = useMemo(() => {
-    const total = sampledData.length - 1 || 1;
-
-    const onlineData: number[] = [];
-    const standbyData: number[] = [];
-    const faultData: number[] = [];
-
-    sampledData.forEach((_, index) => {
-      const progress = index / total;
-      const fault = progress > 0.6 && progress < 0.68 ? 1 : 0;
-      const ripple = Math.sin(progress * Math.PI * 6);
-      const standbyBase = progress < 0.2 || progress > 0.82 ? 2 : 1;
-      const standby = Math.min(STORAGE_COUNT - fault, standbyBase + (ripple > 0.85 ? 1 : 0));
-      const online = Math.max(0, STORAGE_COUNT - standby - fault);
-
-      onlineData.push(online);
-      standbyData.push(standby);
-      faultData.push(fault);
-    });
-
-    return {
-      onlineData,
-      standbyData,
-      faultData,
-    };
-  }, [sampledData]);
-
-  const isDay = visualTheme === "day";
-
-  useEffect(() => {
-    const container = chartsContainerRef.current;
-
-    if (!container) {
+  useFrame(() => {
+    if (isLayoutLocked || !model1Ref.current || !model2SampleRef.current) {
       return;
     }
 
-    const computeChartHeight = () => {
-      const containerHeight = container.clientHeight;
-      const gaps = 12 * 3;
-      const singleCardHeight = Math.max(140, (containerHeight - gaps) / 4);
-      const estimatedHeaderAndPadding = 36;
-      const nextChartHeight = Math.max(104, Math.floor(singleCardHeight - estimatedHeaderAndPadding));
-      setChartHeight(nextChartHeight);
-    };
+    const box1 = new Box3().setFromObject(model1Ref.current);
+    const box2 = new Box3().setFromObject(model2SampleRef.current);
 
-    computeChartHeight();
+    if (box1.isEmpty() || box2.isEmpty()) {
+      return;
+    }
 
-    const observer = new ResizeObserver(computeChartHeight);
-    observer.observe(container);
+    const size1 = new Vector3();
+    const size2 = new Vector3();
+    box1.getSize(size1);
+    box2.getSize(size2);
 
-    return () => observer.disconnect();
-  }, []);
+    const model1Span = Math.max(size1.x, size1.z);
+    if (model1Span <= 0) {
+      return;
+    }
 
-  const irradianceOptions = useMemo(
-    () =>
-      createMetricChartOptions({
-        title: "辐照曲线",
-        unit: "W/m²",
-        data: irradianceSeries,
-        categories: chartCategories,
-        color: isDay ? "#f59e0b" : "#fbbf24",
-        isDay,
-        chartHeight,
-      }),
-    [chartCategories, chartHeight, irradianceSeries, isDay],
+    const model2PlanarSpan = Math.max(size2.x, size2.z, 0.5);
+    const spacingX = model2PlanarSpan * MODEL2_INNER_SPACING_FACTOR;
+    const spacingZ = model2PlanarSpan * MODEL2_INNER_SPACING_FACTOR;
+    const matrixWidth = (MODEL2_MATRIX.cols - 1) * spacingX + model2PlanarSpan;
+    const matrixDepth = (MODEL2_MATRIX.rows - 1) * spacingZ + model2PlanarSpan;
+    const matrixGroupSpacingX = matrixWidth * MATRIX_GROUP_SPACING_FACTOR;
+    const totalMatrixHalfWidth =
+      (MODEL2_HORIZONTAL_GROUP_COUNT - 1) * 0.5 * matrixGroupSpacingX +
+      matrixWidth * 0.5;
+    const model1HalfWidth = Math.max(size1.x, size1.z) * 0.5;
+    const separation = model2PlanarSpan * MODEL1_MATRIX_SEPARATION_FACTOR;
+    const model1X = -totalMatrixHalfWidth - model1HalfWidth - separation;
+    const clusterSpacingZ = matrixDepth * CLUSTER_SPACING_FACTOR;
+
+    setLayout({
+      spacingX,
+      spacingZ,
+      matrixGroupSpacingX,
+      model1X,
+      clusterSpacingZ,
+    });
+
+    setIsLayoutLocked(true);
+  });
+
+  const clusterZOffsets = Array.from(
+    { length: CLUSTER_COUNT },
+    (_, clusterIndex) =>
+      (clusterIndex - (CLUSTER_COUNT - 1) / 2) * layout.clusterSpacingZ,
   );
 
-  const windOptions = useMemo(
-    () =>
-      createMetricChartOptions({
-        title: "风速曲线",
-        unit: "m/s",
-        data: windSeries,
-        categories: chartCategories,
-        color: isDay ? "#0ea5e9" : "#38bdf8",
-        isDay,
-        chartHeight,
-      }),
-    [chartCategories, chartHeight, isDay, windSeries],
-  );
-  const generationOptions = useMemo(
-    () =>
-      createMetricChartOptions({
-        title: "发电功率",
-        unit: "MW",
-        data: generationSeries,
-        categories: chartCategories,
-        color: isDay ? "#16a34a" : "#4ade80",
-        isDay,
-        chartHeight,
-      }),
-    [chartCategories, chartHeight, generationSeries, isDay],
-  );
-  const storageRuntimeOptions = useMemo(
-    () =>
-      createStorageRuntimeOptions({
-        categories: chartCategories,
-        onlineData: storageRuntimeSeries.onlineData,
-        standbyData: storageRuntimeSeries.standbyData,
-        faultData: storageRuntimeSeries.faultData,
-        isDay,
-        chartHeight,
-      }),
-    [chartCategories, chartHeight, isDay, storageRuntimeSeries.faultData, storageRuntimeSeries.onlineData, storageRuntimeSeries.standbyData],
+  const matrixGroupXOffsets = Array.from(
+    { length: MODEL2_HORIZONTAL_GROUP_COUNT },
+    (_, groupIndex) =>
+      (groupIndex - (MODEL2_HORIZONTAL_GROUP_COUNT - 1) / 2) *
+      layout.matrixGroupSpacingX,
   );
 
-  const containerClass = fullScreen
-    ? `site-topology-flow relative h-full min-h-screen w-full overflow-hidden ${
-        isDay ? "border-0 bg-[#e7f5ff] shadow-none" : "border-0 bg-[#050b18] shadow-none"
-      }`
-    : `site-topology-flow relative h-full min-h-[520px] w-full overflow-hidden rounded-2xl ${
-        isDay
-          ? "border border-sky-200/80 bg-[#e7f5ff] shadow-[0_16px_40px_rgba(14,116,144,0.18)]"
-          : "border border-slate-800/70 bg-[#050b18] shadow-[0_16px_56px_rgba(2,6,23,0.45)]"
-      }`;
+  const gapModel1ZOffsets = clusterZOffsets
+    .slice(0, -1)
+    .map((zOffset, idx) => (zOffset + clusterZOffsets[idx + 1]) * 0.5);
+  const baseModel1ZOffsets = [...clusterZOffsets, ...gapModel1ZOffsets].sort(
+    (a, b) => a - b,
+  );
+  const model1MinZ = baseModel1ZOffsets[0] ?? 0;
+  const model1MaxZ = baseModel1ZOffsets[baseModel1ZOffsets.length - 1] ?? 0;
 
-  const chartCardClass = isDay
-    ? "border border-sky-200/90 bg-white/90 shadow-[0_8px_20px_rgba(14,116,144,0.12)]"
-    : "border border-cyan-500/30 bg-slate-900/72 shadow-[0_10px_24px_rgba(2,6,23,0.42)]";
+  const model1ZOffsets = Array.from(
+    { length: MODEL1_TARGET_COUNT },
+    (_, idx) => {
+      const denominator = Math.max(1, MODEL1_TARGET_COUNT - 1);
+      const t = idx / denominator;
+      return model1MinZ + (model1MaxZ - model1MinZ) * t;
+    },
+  );
+
+  const model2InstancePositions = useMemo<[number, number, number][]>(() => {
+    const positions: [number, number, number][] = [];
+
+    for (const zOffset of clusterZOffsets) {
+      for (const groupXOffset of matrixGroupXOffsets) {
+        for (let row = 0; row < MODEL2_MATRIX.rows; row += 1) {
+          for (let col = 0; col < MODEL2_MATRIX.cols; col += 1) {
+            const x =
+              groupXOffset +
+              (col - (MODEL2_MATRIX.cols - 1) / 2) * layout.spacingX;
+            const z =
+              zOffset + (row - (MODEL2_MATRIX.rows - 1) / 2) * layout.spacingZ;
+            positions.push([x, 0, z]);
+          }
+        }
+      }
+    }
+
+    return positions;
+  }, [clusterZOffsets, matrixGroupXOffsets, layout.spacingX, layout.spacingZ]);
 
   return (
-    <div className={containerClass}>
-      <div className="relative z-10 flex h-full gap-3 p-3">
-        <aside ref={chartsContainerRef} className="grid h-full w-[20%] shrink-0 min-w-[320px] grid-rows-4 gap-3 pr-1">
-          <div className={`flex min-h-0 flex-col rounded-xl p-2 ${chartCardClass}`}>
-            <div className="mb-1 px-2">
-              <p className={`text-xs font-semibold tracking-[0.08em] uppercase ${isDay ? "text-slate-600" : "text-slate-400"}`}>辐照曲线</p>
-            </div>
-            <HighchartsReact highcharts={Highcharts} options={irradianceOptions} />
-          </div>
+    <>
+      <Sky
+        distance={450000}
+        sunPosition={preset.sunPosition}
+        inclination={0.5}
+        azimuth={0.25}
+        turbidity={preset.sky.turbidity}
+        rayleigh={preset.sky.rayleigh}
+      />
 
-          <div className={`flex min-h-0 flex-col rounded-xl p-2 ${chartCardClass}`}>
-            <div className="mb-1 px-2">
-              <p className={`text-xs font-semibold tracking-[0.08em] uppercase ${isDay ? "text-slate-600" : "text-slate-400"}`}>风速曲线</p>
-            </div>
-            <HighchartsReact highcharts={Highcharts} options={windOptions} />
-          </div>
+      <ambientLight intensity={preset.ambientIntensity} />
+      <directionalLight
+        color={preset.directionalColor}
+        position={preset.directionalPosition}
+        intensity={preset.directionalIntensity}
+        castShadow
+        shadow-mapSize-width={preset.shadow.mapSize}
+        shadow-mapSize-height={preset.shadow.mapSize}
+        shadow-camera-near={preset.shadow.cameraNear}
+        shadow-camera-far={preset.shadow.cameraFar}
+        shadow-camera-left={-preset.shadow.cameraBounds}
+        shadow-camera-right={preset.shadow.cameraBounds}
+        shadow-camera-top={preset.shadow.cameraBounds}
+        shadow-camera-bottom={-preset.shadow.cameraBounds}
+        shadow-bias={preset.shadow.bias}
+        shadow-normalBias={preset.shadow.normalBias}
+      />
+      <hemisphereLight
+        color={preset.hemisphereSky}
+        groundColor={preset.hemisphereGround}
+        intensity={preset.hemisphereIntensity}
+      />
+      <Ground color={preset.groundColor} />
 
-          <div className={`flex min-h-0 flex-col rounded-xl p-2 ${chartCardClass}`}>
-            <div className="mb-1 px-2">
-              <p className={`text-xs font-semibold tracking-[0.08em] uppercase ${isDay ? "text-slate-600" : "text-slate-400"}`}>发电量</p>
-            </div>
-            <HighchartsReact highcharts={Highcharts} options={generationOptions} />
-          </div>
+      <Suspense fallback={<Loader />}>
+        <group ref={model2SampleRef} visible={false} scale={MODEL2_SCALE}>
+          <primitive object={model2Scene.clone()} />
+        </group>
 
-          <div className={`flex min-h-0 flex-col rounded-xl p-2 ${chartCardClass}`}>
-            <div className="mb-1 px-2">
-              <p className={`text-xs font-semibold tracking-[0.08em] uppercase ${isDay ? "text-slate-600" : "text-slate-400"}`}>
-                储能电柜运行情况
-              </p>
-            </div>
-            <HighchartsReact highcharts={Highcharts} options={storageRuntimeOptions} />
-          </div>
-        </aside>
+        {model1ZOffsets.map((zOffset, idx) => (
+          <group
+            key={`model1-${idx}`}
+            ref={idx === 0 ? model1Ref : null}
+            position={[layout.model1X, 0, zOffset]}
+            scale={MODEL1_SCALE}
+          >
+            <Model1 />
+          </group>
+        ))}
 
-        <section className="relative min-w-0 flex-1 overflow-hidden rounded-xl border border-slate-700/45 bg-transparent">
-          <div
-            className={`pointer-events-none absolute inset-0 z-0 ${
+        <Model2Instanced
+          positions={model2InstancePositions}
+          scale={MODEL2_SCALE}
+        />
+
+        <Environment preset={preset.environment} />
+        <ContactShadows
+          position={[0, -0.02, 0]}
+          frames={1}
+          resolution={512}
+          opacity={preset.contactShadow.opacity}
+          scale={preset.contactShadow.scale * 2.2}
+          blur={preset.contactShadow.blur}
+          far={preset.contactShadow.far * 1.5}
+        />
+      </Suspense>
+
+      <OrbitControls
+        makeDefault
+        minDistance={2.5}
+        maxDistance={70}
+        target={[0, 0.6, 0]}
+      />
+    </>
+  );
+}
+
+interface SiteTopologyFlowProps {
+  dashboardData: SiteDashboardData;
+  fullScreen?: boolean;
+}
+
+export default function SiteTopologyFlow({
+  dashboardData,
+  fullScreen = false,
+}: SiteTopologyFlowProps) {
+  const [activePreset, setActivePreset] = useState<ScenePresetKey>("midday");
+  const [overviewExpanded, setOverviewExpanded] = useState(true);
+  const [leftPanelOpen, setLeftPanelOpen] = useState(false);
+  const [rightPanelOpen, setRightPanelOpen] = useState(false);
+  const [bottomPanelOpen, setBottomPanelOpen] = useState(false);
+  const preset = SCENE_PRESETS[activePreset];
+  const isDay = activePreset === "midday";
+  const chartPanelClass = isDay
+    ? "border border-sky-200/90 bg-white/72"
+    : "border border-orange-200/85 bg-white/72";
+  const accentTextClass = isDay ? "text-sky-700" : "text-orange-700";
+  const drawerClass = isDay
+    ? "border border-sky-200/90 bg-white/82 shadow-[0_14px_30px_rgba(14,116,144,0.16)]"
+    : "border border-orange-200/85 bg-white/84 shadow-[0_14px_30px_rgba(180,83,9,0.14)]";
+  const edgeButtonClass = isDay
+    ? "border border-sky-200/90 bg-white/90 text-sky-700 hover:bg-sky-50"
+    : "border border-orange-200/90 bg-white/92 text-orange-700 hover:bg-orange-50";
+  const overviewTileClass = isDay
+    ? "border border-sky-200/80 bg-white/80 shadow-[0_6px_16px_rgba(14,116,144,0.08)]"
+    : "border border-orange-200/80 bg-white/82 shadow-[0_6px_16px_rgba(180,83,9,0.08)]";
+  const overviewTrackClass = isDay ? "bg-sky-100/80" : "bg-orange-100/80";
+  const overviewFillClass = isDay
+    ? "bg-gradient-to-r from-cyan-400 via-sky-500 to-blue-500"
+    : "bg-gradient-to-r from-amber-400 via-orange-500 to-rose-500";
+  const minuteData = useMemo(() => generateMinuteLevelData(), []);
+  const sampledData = useMemo(
+    () =>
+      minuteData.filter(
+        (_, index) => index % 12 === 0 || index === minuteData.length - 1,
+      ),
+    [minuteData],
+  );
+  const categories = useMemo(
+    () => sampledData.map((point) => point.time),
+    [sampledData],
+  );
+  const irradianceSeries = useMemo(
+    () => sampledData.map((point) => point.irradiance),
+    [sampledData],
+  );
+  const windSeries = useMemo(
+    () => sampledData.map((point) => point.windSpeed),
+    [sampledData],
+  );
+  const generationSeries = useMemo(() => {
+    return sampledData.map((point, index) => {
+      const modulation = 0.93 + 0.07 * Math.sin(index / 5);
+      return Number(
+        (Math.max(0, point.irradiance) * 0.062 * modulation).toFixed(2),
+      );
+    });
+  }, [sampledData]);
+  const socValue = useMemo(() => {
+    const base =
+      62 +
+      dashboardData.pvPowerMw * 1.8 -
+      Math.abs(dashboardData.storagePowerMw) * 2.6;
+    return Number(Math.max(22, Math.min(95, base)).toFixed(1));
+  }, [dashboardData.pvPowerMw, dashboardData.storagePowerMw]);
+  const chargePower = Math.max(
+    0,
+    Number(dashboardData.storagePowerMw.toFixed(2)),
+  );
+  const dischargePower = Math.max(
+    0,
+    Number(Math.abs(Math.min(0, dashboardData.storagePowerMw)).toFixed(2)),
+  );
+  const loadComposition = useMemo(() => {
+    const total = Math.max(1, dashboardData.loadPowerMw);
+    const production = Number((total * 0.58).toFixed(2));
+    const process = Number((total * 0.27).toFixed(2));
+    const station = Number((total - production - process).toFixed(2));
+    return { production, process, station };
+  }, [dashboardData.loadPowerMw]);
+  const inverterOnlineRate = dashboardData.hasWarning ? 95.1 : 99.2;
+  const batteryClusterOnlineRate = dashboardData.hasWarning ? 93.7 : 98.3;
+  const workOrderData = dashboardData.hasWarning
+    ? { pending: 8, processing: 5, closed: 17 }
+    : { pending: 3, processing: 2, closed: 24 };
+
+  const leftIrradianceOptions = useMemo(
+    () =>
+      createTrendOptions({
+        title: "辐照度",
+        unit: "W/m²",
+        color: isDay ? "#f59e0b" : "#fb923c",
+        data: irradianceSeries,
+        categories,
+        isDay,
+      }),
+    [categories, irradianceSeries, isDay],
+  );
+  const leftWindOptions = useMemo(
+    () =>
+      createTrendOptions({
+        title: "风速",
+        unit: "m/s",
+        color: isDay ? "#0ea5e9" : "#38bdf8",
+        data: windSeries,
+        categories,
+        isDay,
+      }),
+    [categories, windSeries, isDay],
+  );
+  const leftGenerationOptions = useMemo(
+    () =>
+      createTrendOptions({
+        title: "发电量",
+        unit: "MW",
+        color: isDay ? "#16a34a" : "#4ade80",
+        data: generationSeries,
+        categories,
+        isDay,
+      }),
+    [categories, generationSeries, isDay],
+  );
+
+  const rightSocOptions = useMemo<Highcharts.Options>(
+    () => ({
+      chart: {
+        type: "pie",
+        height: 240,
+        backgroundColor: "transparent",
+        spacing: [8, 8, 8, 8],
+      },
+      title: { text: undefined },
+      credits: { enabled: false },
+      tooltip: { pointFormat: "<b>{point.y:.1f}%</b>" },
+      plotOptions: {
+        pie: {
+          innerSize: "68%",
+          dataLabels: { enabled: false },
+          borderWidth: 0,
+        },
+      },
+      series: [
+        {
+          type: "pie",
+          data: [
+            { name: "SOC", y: socValue, color: isDay ? "#22c55e" : "#4ade80" },
+            {
+              name: "剩余",
+              y: 100 - socValue,
+              color: isDay ? "#dbeafe" : "#ffedd5",
+            },
+          ],
+        },
+      ],
+    }),
+    [isDay, socValue],
+  );
+  const rightChargeDischargeOptions = useMemo<Highcharts.Options>(
+    () => ({
+      chart: {
+        type: "column",
+        height: 195,
+        backgroundColor: "transparent",
+        spacing: [8, 8, 8, 8],
+      },
+      title: { text: undefined },
+      credits: { enabled: false },
+      xAxis: {
+        categories: ["充电", "放电"],
+        labels: {
+          style: { color: isDay ? "#475569" : "#9a3412", fontSize: "11px" },
+        },
+      },
+      yAxis: {
+        min: 0,
+        title: { text: undefined },
+        labels: {
+          style: { color: isDay ? "#64748b" : "#9a3412", fontSize: "10px" },
+        },
+      },
+      legend: { enabled: false },
+      series: [
+        {
+          type: "column",
+          data: [chargePower || 0.01, dischargePower || 0.01],
+          colorByPoint: true,
+          colors: [
+            isDay ? "#22c55e" : "#4ade80",
+            isDay ? "#f59e0b" : "#fb923c",
+          ],
+        },
+      ],
+    }),
+    [chargePower, dischargePower, isDay],
+  );
+  const rightLoadCompositionOptions = useMemo<Highcharts.Options>(
+    () => ({
+      chart: {
+        type: "pie",
+        height: 210,
+        backgroundColor: "transparent",
+        spacing: [8, 8, 8, 8],
+      },
+      title: { text: undefined },
+      credits: { enabled: false },
+      tooltip: { pointFormat: "<b>{point.y:.2f} MW</b>" },
+      plotOptions: {
+        pie: {
+          innerSize: "55%",
+          dataLabels: { enabled: true, format: "{point.name}" },
+          borderWidth: 0,
+        },
+      },
+      series: [
+        {
+          type: "pie",
+          data: [
+            {
+              name: "生产负载",
+              y: loadComposition.production,
+              color: isDay ? "#6366f1" : "#818cf8",
+            },
+            {
+              name: "工艺负载",
+              y: loadComposition.process,
+              color: isDay ? "#0ea5e9" : "#38bdf8",
+            },
+            {
+              name: "站控负载",
+              y: loadComposition.station,
+              color: isDay ? "#14b8a6" : "#2dd4bf",
+            },
+          ],
+        },
+      ],
+    }),
+    [
+      isDay,
+      loadComposition.process,
+      loadComposition.production,
+      loadComposition.station,
+    ],
+  );
+
+  const bottomOnlineRateOptions = useMemo<Highcharts.Options>(
+    () => ({
+      chart: {
+        type: "column",
+        height: 200,
+        backgroundColor: "transparent",
+        spacing: [8, 8, 8, 8],
+      },
+      title: { text: undefined },
+      credits: { enabled: false },
+      xAxis: {
+        categories: ["逆变器", "电池簇"],
+        labels: {
+          style: { color: isDay ? "#475569" : "#9a3412", fontSize: "11px" },
+        },
+      },
+      yAxis: {
+        min: 0,
+        max: 100,
+        title: { text: undefined },
+        labels: {
+          format: "{value}%",
+          style: { color: isDay ? "#64748b" : "#9a3412", fontSize: "10px" },
+        },
+      },
+      legend: { enabled: false },
+      tooltip: { valueSuffix: "%" },
+      series: [
+        {
+          type: "column",
+          data: [inverterOnlineRate, batteryClusterOnlineRate],
+          colorByPoint: true,
+          colors: [
+            isDay ? "#22c55e" : "#4ade80",
+            isDay ? "#0ea5e9" : "#38bdf8",
+          ],
+        },
+      ],
+    }),
+    [batteryClusterOnlineRate, inverterOnlineRate, isDay],
+  );
+  const bottomAlarmOptions = useMemo<Highcharts.Options>(() => {
+    const localAlarmCategories = [
+      "08:00",
+      "09:00",
+      "10:00",
+      "11:00",
+      "12:00",
+      "13:00",
+      "14:00",
+      "15:00",
+    ];
+    const localAlarmSeries = dashboardData.hasWarning
+      ? [1, 2, 3, 5, 4, 3, 2, 2]
+      : [0, 1, 1, 2, 1, 1, 0, 1];
+
+    return {
+      chart: {
+        type: "areaspline",
+        height: 200,
+        backgroundColor: "transparent",
+        spacing: [8, 8, 8, 8],
+      },
+      title: { text: undefined },
+      credits: { enabled: false },
+      xAxis: {
+        categories: localAlarmCategories,
+        tickLength: 0,
+        labels: {
+          style: { color: isDay ? "#475569" : "#9a3412", fontSize: "10px" },
+        },
+      },
+      yAxis: {
+        title: { text: undefined },
+        labels: {
+          style: { color: isDay ? "#64748b" : "#9a3412", fontSize: "10px" },
+        },
+      },
+      legend: { enabled: false },
+      tooltip: { valueSuffix: " 条" },
+      series: [
+        {
+          type: "areaspline",
+          data: localAlarmSeries,
+          color: isDay ? "#ef4444" : "#fb7185",
+        },
+      ],
+      plotOptions: {
+        areaspline: { marker: { enabled: false }, fillOpacity: 0.2 },
+      },
+    };
+  }, [dashboardData.hasWarning, isDay]);
+  const bottomWorkOrderOptions = useMemo<Highcharts.Options>(
+    () => ({
+      chart: {
+        type: "bar",
+        height: 200,
+        backgroundColor: "transparent",
+        spacing: [8, 8, 8, 8],
+      },
+      title: { text: undefined },
+      credits: { enabled: false },
+      xAxis: {
+        categories: ["待处理", "处理中", "已完成"],
+        labels: {
+          style: { color: isDay ? "#475569" : "#9a3412", fontSize: "11px" },
+        },
+      },
+      yAxis: {
+        title: { text: undefined },
+        labels: {
+          style: { color: isDay ? "#64748b" : "#9a3412", fontSize: "10px" },
+        },
+      },
+      legend: { enabled: false },
+      tooltip: { valueSuffix: " 单" },
+      series: [
+        {
+          type: "bar",
+          data: [
+            workOrderData.pending,
+            workOrderData.processing,
+            workOrderData.closed,
+          ],
+          colorByPoint: true,
+          colors: [
+            isDay ? "#f59e0b" : "#fb923c",
+            isDay ? "#0ea5e9" : "#38bdf8",
+            isDay ? "#22c55e" : "#4ade80",
+          ],
+        },
+      ],
+    }),
+    [
+      isDay,
+      workOrderData.closed,
+      workOrderData.pending,
+      workOrderData.processing,
+    ],
+  );
+
+  const overviewItems = useMemo(() => {
+    const capacity = Math.max(1, Number(dashboardData.capacity));
+    const pvPct = Math.min(100, (dashboardData.pvPowerMw / capacity) * 100);
+    const storagePct = Math.min(100, (Math.abs(dashboardData.storagePowerMw) / (capacity * 0.6)) * 100);
+    const loadPct = Math.min(100, (dashboardData.loadPowerMw / capacity) * 100);
+    const gridPct = Math.min(100, (Math.abs(dashboardData.gridPowerMw) / capacity) * 100);
+
+    return [
+      {
+        icon: "☀",
+        label: "光伏功率",
+        value: `${dashboardData.pvPowerMw.toFixed(2)} MW`,
+        progress: pvPct,
+      },
+      {
+        icon: "↻",
+        label: "储能功率",
+        value: `${dashboardData.storagePowerMw >= 0 ? "充电" : "放电"} ${Math.abs(dashboardData.storagePowerMw).toFixed(2)} MW`,
+        progress: storagePct,
+      },
+      {
+        icon: "⌁",
+        label: "负载功率",
+        value: `${dashboardData.loadPowerMw.toFixed(2)} MW`,
+        progress: loadPct,
+      },
+      {
+        icon: "⇆",
+        label: "并网/馈电",
+        value: `${dashboardData.gridPowerMw >= 0 ? "并网" : "馈电"} ${Math.abs(dashboardData.gridPowerMw).toFixed(2)} MW`,
+        progress: gridPct,
+      },
+      {
+        icon: "♻",
+        label: "减排效益",
+        value: `CO₂ ${dashboardData.co2ReductionTons.toFixed(2)} 吨`,
+        progress: Math.min(100, (dashboardData.co2ReductionTons / 10) * 100),
+      },
+      {
+        icon: "🌱",
+        label: "植树等效",
+        value: `${dashboardData.treeEquivalent.toLocaleString()} 棵`,
+        progress: Math.min(100, (dashboardData.treeEquivalent / 600) * 100),
+      },
+      {
+        icon: "¥",
+        label: "峰谷收益",
+        value: `¥ ${dashboardData.arbitrageIncome.toLocaleString()}`,
+        progress: Math.min(100, (dashboardData.arbitrageIncome / 20000) * 100),
+      },
+      {
+        icon: "☁",
+        label: "天气",
+        value: dashboardData.weather,
+        progress: dashboardData.weather.includes("晴")
+          ? 92
+          : dashboardData.weather.includes("多云")
+            ? 72
+            : dashboardData.weather.includes("阴")
+              ? 58
+              : 46,
+      },
+    ];
+  }, [dashboardData]);
+
+  return (
+    <div
+      className={
+        fullScreen
+          ? `relative h-screen w-screen overflow-hidden ${
               isDay
-                ? "bg-[radial-gradient(circle_at_18%_16%,rgba(56,189,248,0.28),transparent_34%),radial-gradient(circle_at_88%_80%,rgba(132,204,22,0.18),transparent_30%),linear-gradient(180deg,#dbeafe_0%,#f0fdf4_58%,#ecfccb_100%)]"
-                : "bg-[radial-gradient(circle_at_18%_18%,rgba(56,189,248,0.18),transparent_34%),radial-gradient(circle_at_82%_78%,rgba(34,197,94,0.14),transparent_30%),linear-gradient(180deg,#081225_0%,#050b18_100%)]"
-            }`}
-          />
+                ? "border-0 bg-[#e7f5ff] shadow-none"
+                : "border-0 bg-[#fff0e3] shadow-none"
+            }`
+          : `relative h-full min-h-[520px] w-full overflow-hidden rounded-2xl border ${
+              isDay
+                ? "border-sky-200/80 bg-[#e7f5ff] shadow-[0_16px_40px_rgba(14,116,144,0.18)]"
+                : "border-orange-200/70 bg-[#fff0e3] shadow-[0_16px_40px_rgba(180,83,9,0.16)]"
+            }`
+      }
+    >
+      <Canvas
+        dpr={[1, 1.25]}
+        gl={{ powerPreference: "high-performance", antialias: true }}
+        shadows={{ type: PCFSoftShadowMap }}
+        camera={{ position: [8, 3.6, 12], fov: 45 }}
+      >
+        <color attach="background" args={[preset.background]} />
+        <fog
+          attach="fog"
+          args={[preset.background, preset.fogNear, preset.fogFar]}
+        />
+        <Scene preset={preset} />
+      </Canvas>
+
+      <div className="absolute top-3 left-3 z-20">
+        {overviewExpanded ? (
           <div
-            className={`pointer-events-none absolute top-3 left-3 z-20 rounded-xl px-4 py-3 backdrop-blur-sm ${
-              isDay ? "border border-sky-200/90 bg-white/85" : "border border-cyan-400/30 bg-slate-900/75"
-            }`}
+            className={`w-[640px] max-w-[72vw] rounded-2xl p-2.5 shadow-[0_10px_26px_rgba(15,23,42,0.12)] backdrop-blur-md ${chartPanelClass}`}
           >
-            <p className={`text-xs font-medium tracking-[0.08em] uppercase ${isDay ? "text-sky-700" : "text-cyan-300"}`}>
-              {isDay ? "Solar Plant Aerial Map" : "Site Digital Twin"}
-            </p>
-            <p className={`mt-1 text-sm font-semibold ${isDay ? "text-slate-900" : "text-slate-100"}`}>场站 2D 设备分布视图</p>
-            <p className={`mt-1 text-xs ${isDay ? "text-slate-600" : "text-slate-400"}`}>NCU 6分区矩阵排布 + 储能电柜横向排布</p>
-          </div>
-
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onNodeClick={(_, node) => {
-              const nodeData = node.data as TopologyNodeData | undefined;
-
-              if (nodeData?.kind === "ncu" && nodeData.hasWorkOrder) {
-                router.push(`/sites/${siteId}/devices/inverter-b`);
-              }
-            }}
-            nodeTypes={nodeTypes}
-            fitView
-            fitViewOptions={{ padding: 0.08 }}
-            panOnDrag
-            zoomOnScroll
-            zoomOnPinch
-            nodesDraggable={false}
-            nodesConnectable={false}
-            elementsSelectable={false}
-            proOptions={{ hideAttribution: true }}
-            style={{ background: "transparent" }}
-          >
-            <Controls showInteractive={false} />
-            <Background
-              variant={BackgroundVariant.Dots}
-              gap={20}
-              size={1}
-              color={isDay ? "rgba(51,65,85,0.18)" : "rgba(148,163,184,0.25)"}
-            />
-
-            <Panel position="bottom-left">
-              <div
-                className={`rounded-xl px-4 py-3 text-xs backdrop-blur-sm ${
-                  isDay
-                    ? "border border-slate-300/80 bg-white/90 text-slate-700"
-                    : "border border-slate-700/70 bg-slate-950/70 text-slate-200"
-                }`}
-              >
-                <div className={`mb-2 font-semibold tracking-wide ${isDay ? "text-slate-800" : "text-slate-100"}`}>状态统计</div>
-                <div className="flex items-center gap-2 text-[11px]">
-                  <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
-                  NCU正常 {ncuStatusSummary.normal}
-                  <span className="inline-block h-2 w-2 rounded-full bg-amber-500" />
-                  告警 {ncuStatusSummary.warning}
-                  <span className="inline-block h-2 w-2 rounded-full bg-rose-500" />
-                  异常 {ncuStatusSummary.error}
-                </div>
-                <div className="mt-1 flex items-center gap-2 text-[11px]">
-                  <span className="inline-block h-2 w-2 rounded-full bg-blue-500" />
-                  &lt;30°C {storageTempSummary.blue}
-                  <span className="inline-block h-2 w-2 rounded-full bg-yellow-500" />
-                  30-60°C {storageTempSummary.yellow}
-                  <span className="inline-block h-2 w-2 rounded-full bg-orange-500" />
-                  60-80°C {storageTempSummary.orange}
-                  <span className="inline-block h-2 w-2 rounded-full bg-red-500" />
-                  &gt;80°C {storageTempSummary.red}
-                </div>
+            <div className="pointer-events-auto flex items-start justify-between gap-2">
+              <div>
+                <p className={`text-[11px] font-semibold tracking-[0.1em] uppercase ${accentTextClass}`}>实时运营总览图</p>
+                <p className="mt-0.5 text-xs font-semibold text-slate-700">{dashboardData.siteName}</p>
+                <p className="mt-0.5 text-xs text-slate-600">实时设备拓扑图与状态监控</p>
+                <p className="mt-0.5 text-xs text-slate-600">
+                  {dashboardData.location} · 容量 {dashboardData.capacity} MW · {dashboardData.weather}
+                </p>
               </div>
-            </Panel>
-          </ReactFlow>
-        </section>
+              <button
+                type="button"
+                onClick={() => setOverviewExpanded(false)}
+                className={`rounded-lg px-2 py-1 text-xs font-semibold ${edgeButtonClass}`}
+                title="缩小总览浮窗"
+              >
+                －
+              </button>
+            </div>
+            <div className="mt-2 pointer-events-auto rounded-xl border border-white/70 bg-white/65 p-2">
+              <div className="mb-2 flex items-center justify-between rounded-lg border border-white/70 bg-white/70 px-2 py-1.5">
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`inline-flex h-6 w-6 items-center justify-center rounded-md text-xs font-semibold ${
+                      isDay
+                        ? "bg-sky-100 text-sky-700"
+                        : "bg-orange-100 text-orange-700"
+                    }`}
+                  >
+                    ⚡
+                  </span>
+                  <p className="text-xs font-semibold text-slate-700">
+                    实时运营状态
+                  </p>
+                </div>
+                <span
+                  className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                    dashboardData.hasWarning
+                      ? "bg-rose-100 text-rose-700"
+                      : "bg-emerald-100 text-emerald-700"
+                  }`}
+                >
+                  {dashboardData.hasWarning ? "异常关注" : "运行稳定"}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {overviewItems.map((item) => {
+                  const safeProgress = Math.min(100, Math.max(0, item.progress));
+                  return (
+                    <div
+                      key={item.label}
+                      className={`rounded-lg px-2 py-1.5 ${overviewTileClass}`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-[11px] font-semibold text-slate-600">
+                            {item.label}
+                          </p>
+                          <p className="truncate text-[13px] font-semibold text-slate-800">
+                            {item.value}
+                          </p>
+                        </div>
+                        <span
+                          className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-xs font-semibold ${
+                            isDay
+                              ? "bg-sky-100/90 text-sky-700"
+                              : "bg-orange-100/90 text-orange-700"
+                          }`}
+                        >
+                          {item.icon}
+                        </span>
+                      </div>
+                      <div className={`mt-1.5 h-1.5 w-full overflow-hidden rounded-full ${overviewTrackClass}`}>
+                        <div
+                          className={`h-full rounded-full ${overviewFillClass}`}
+                          style={{ width: `${safeProgress}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setOverviewExpanded(true)}
+            className={`pointer-events-auto rounded-full p-2.5 shadow-sm transition-colors ${edgeButtonClass}`}
+            title="放大总览浮窗"
+          >
+            📊
+          </button>
+        )}
       </div>
 
       <div
-        className={`absolute top-5 right-5 z-20 flex items-center gap-2 rounded-xl p-1 shadow-sm backdrop-blur-sm ${
-          isDay ? "border border-sky-200/90 bg-white/88" : "border border-slate-700/70 bg-slate-900/85"
+        className={`absolute top-4 right-4 z-20 flex items-center gap-2 rounded-xl p-1 shadow-sm backdrop-blur-sm ${
+          isDay
+            ? "border border-sky-200/90 bg-white/88"
+            : "border border-orange-200/80 bg-white/88"
         }`}
       >
         <button
           type="button"
-          onClick={() => setVisualTheme("night")}
+          onClick={() => setActivePreset("midday")}
           className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
-            visualTheme === "night"
-              ? "bg-cyan-500/25 text-cyan-300"
-              : isDay
-                ? "text-slate-700 hover:bg-sky-100"
-                : "text-slate-300 hover:bg-slate-700/60"
-          }`}
-        >
-          夜间科技
-        </button>
-        <button
-          type="button"
-          onClick={() => setVisualTheme("day")}
-          className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
-            visualTheme === "day"
+            activePreset === "midday"
               ? "bg-sky-500/25 text-sky-700"
-              : isDay
-                ? "text-slate-700 hover:bg-sky-100"
-                : "text-slate-300 hover:bg-slate-700/60"
+              : "text-slate-700 hover:bg-sky-100"
           }`}
         >
           白天航拍
         </button>
-        <div className={`mx-1 h-4 w-px ${isDay ? "bg-slate-300" : "bg-slate-700"}`} />
         <button
           type="button"
-          onClick={() => setStatusMode("normal")}
+          onClick={() => setActivePreset("sunset")}
           className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
-            statusMode === "normal"
-              ? isDay
-                ? "bg-emerald-100 text-emerald-700"
-                : "bg-emerald-500/25 text-emerald-300"
-              : isDay
-                ? "text-slate-700 hover:bg-sky-100"
-                : "text-slate-300 hover:bg-slate-700/60"
+            activePreset === "sunset"
+              ? "bg-orange-500/25 text-orange-700"
+              : "text-slate-700 hover:bg-orange-100"
           }`}
         >
-          全正常
+          傍晚暖光
         </button>
-        <button
-          type="button"
-          onClick={() => setStatusMode("demo")}
-          className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
-            statusMode === "demo"
-              ? isDay
-                ? "bg-orange-100 text-orange-700"
-                : "bg-orange-500/25 text-orange-300"
-              : isDay
-                ? "text-slate-700 hover:bg-sky-100"
-                : "text-slate-300 hover:bg-slate-700/60"
-          }`}
-        >
-          随机演示
-        </button>
-        {statusMode === "demo" ? (
-          <button
-            type="button"
-            onClick={() => setRefreshNonce((value) => value + 1)}
-            className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
-              isDay ? "text-slate-700 hover:bg-sky-100" : "text-slate-300 hover:bg-slate-700/60"
-            }`}
-          >
-            刷新
-          </button>
-        ) : null}
       </div>
 
-      <style jsx global>{`
-        .site-topology-flow .react-flow__handle {
-          display: none;
-        }
+      <div className="pointer-events-none absolute inset-0 z-20">
+        {leftPanelOpen ? (
+          <div
+            className={`pointer-events-auto absolute top-1/2 left-3 w-[420px] max-h-[90%] -translate-y-1/2 overflow-y-auto rounded-2xl p-3 ${drawerClass}`}
+          >
+            <div className="mb-2 flex items-center justify-between">
+              <p
+                className={`text-xs font-semibold tracking-[0.08em] uppercase ${accentTextClass}`}
+              >
+                环境与发电
+              </p>
+              <button
+                type="button"
+                onClick={() => setLeftPanelOpen(false)}
+                className={`rounded-md px-2 py-1 text-xs ${edgeButtonClass}`}
+              >
+                ◀
+              </button>
+            </div>
+            <div className="space-y-2">
+              <div className="rounded-xl border border-white/70 bg-white/70 p-2">
+                <p className="px-1 text-[11px] font-semibold text-slate-600">
+                  辐照度
+                </p>
+                <HighchartsReact
+                  highcharts={Highcharts}
+                  options={leftIrradianceOptions}
+                />
+              </div>
+              <div className="rounded-xl border border-white/70 bg-white/70 p-2">
+                <p className="px-1 text-[11px] font-semibold text-slate-600">
+                  风速
+                </p>
+                <HighchartsReact
+                  highcharts={Highcharts}
+                  options={leftWindOptions}
+                />
+              </div>
+              <div className="rounded-xl border border-white/70 bg-white/70 p-2">
+                <p className="px-1 text-[11px] font-semibold text-slate-600">
+                  发电量
+                </p>
+                <HighchartsReact
+                  highcharts={Highcharts}
+                  options={leftGenerationOptions}
+                />
+              </div>
+            </div>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setLeftPanelOpen(true)}
+            className={`pointer-events-auto absolute top-1/2 left-3 -translate-y-1/2 rounded-full p-2.5 shadow-sm transition-colors ${edgeButtonClass}`}
+            title="展开环境与发电图表"
+          >
+            ⟪
+          </button>
+        )}
 
-        .site-topology-flow .react-flow__controls {
-          border-radius: 10px;
-          border: 1px solid ${isDay ? "rgba(148,163,184,0.8)" : "rgba(71, 85, 105, 0.7)"};
-          overflow: hidden;
-        }
+        {rightPanelOpen ? (
+          <div
+            className={`pointer-events-auto absolute top-1/2 right-3 w-[420px] max-h-[90%] -translate-y-1/2 overflow-y-auto rounded-2xl p-3 ${drawerClass}`}
+          >
+            <div className="mb-2 flex items-center justify-between">
+              <p
+                className={`text-xs font-semibold tracking-[0.08em] uppercase ${accentTextClass}`}
+              >
+                储能与负载
+              </p>
+              <button
+                type="button"
+                onClick={() => setRightPanelOpen(false)}
+                className={`rounded-md px-2 py-1 text-xs ${edgeButtonClass}`}
+              >
+                ▶
+              </button>
+            </div>
+            <div className="space-y-2">
+              <div className="rounded-xl border border-white/70 bg-white/70 p-2">
+                <p className="px-1 text-[11px] font-semibold text-slate-600">
+                  储能 SOC 环形图
+                </p>
+                <HighchartsReact
+                  highcharts={Highcharts}
+                  options={rightSocOptions}
+                />
+              </div>
+              <div className="rounded-xl border border-white/70 bg-white/70 p-2">
+                <p className="px-1 text-[11px] font-semibold text-slate-600">
+                  充放电功率对比
+                </p>
+                <HighchartsReact
+                  highcharts={Highcharts}
+                  options={rightChargeDischargeOptions}
+                />
+              </div>
+              <div className="rounded-xl border border-white/70 bg-white/70 p-2">
+                <p className="px-1 text-[11px] font-semibold text-slate-600">
+                  负载消耗构成
+                </p>
+                <HighchartsReact
+                  highcharts={Highcharts}
+                  options={rightLoadCompositionOptions}
+                />
+              </div>
+            </div>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setRightPanelOpen(true)}
+            className={`pointer-events-auto absolute top-1/2 right-3 -translate-y-1/2 rounded-full p-2.5 shadow-sm transition-colors ${edgeButtonClass}`}
+            title="展开储能与负载图表"
+          >
+            ⟫
+          </button>
+        )}
 
-        .site-topology-flow .react-flow__controls button {
-          background: ${isDay ? "rgba(255,255,255,0.96)" : "rgba(15, 23, 42, 0.85)"};
-          color: ${isDay ? "#0f172a" : "#e2e8f0"};
-          border-bottom-color: ${isDay ? "rgba(148,163,184,0.8)" : "rgba(71, 85, 105, 0.7)"};
-        }
-
-        .site-topology-flow .react-flow__controls button:hover {
-          background: ${isDay ? "rgba(241,245,249,0.98)" : "rgba(30, 41, 59, 0.95)"};
-        }
-      `}</style>
+        {bottomPanelOpen ? (
+          <div
+            className={`pointer-events-auto absolute bottom-3 left-1/2 w-[calc(100%-2rem)] max-w-[1260px] -translate-x-1/2 rounded-2xl p-3 ${drawerClass}`}
+          >
+            <div className="mb-2 flex items-center justify-between">
+              <p
+                className={`text-xs font-semibold tracking-[0.08em] uppercase ${accentTextClass}`}
+              >
+                设备运行与运维
+              </p>
+              <button
+                type="button"
+                onClick={() => setBottomPanelOpen(false)}
+                className={`rounded-md px-2 py-1 text-xs ${edgeButtonClass}`}
+              >
+                ▼
+              </button>
+            </div>
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+              <div className="rounded-xl border border-white/70 bg-white/70 p-2">
+                <p className="px-1 text-[11px] font-semibold text-slate-600">
+                  逆变器 / 电池簇在线率
+                </p>
+                <HighchartsReact
+                  highcharts={Highcharts}
+                  options={bottomOnlineRateOptions}
+                />
+              </div>
+              <div className="rounded-xl border border-white/70 bg-white/70 p-2">
+                <p className="px-1 text-[11px] font-semibold text-slate-600">
+                  实时告警流水
+                </p>
+                <HighchartsReact
+                  highcharts={Highcharts}
+                  options={bottomAlarmOptions}
+                />
+              </div>
+              <div className="rounded-xl border border-white/70 bg-white/70 p-2">
+                <p className="px-1 text-[11px] font-semibold text-slate-600">
+                  运维工单
+                </p>
+                <HighchartsReact
+                  highcharts={Highcharts}
+                  options={bottomWorkOrderOptions}
+                />
+              </div>
+            </div>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setBottomPanelOpen(true)}
+            className={`pointer-events-auto absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full p-2.5 shadow-sm transition-colors ${edgeButtonClass}`}
+            title="展开设备运行与运维图表"
+          >
+            ⌃
+          </button>
+        )}
+      </div>
     </div>
   );
 }
+
+useGLTF.preload("/1.glb");
+useGLTF.preload("/2.glb");

@@ -39,64 +39,34 @@ export default async function SiteDetailPage({ params }: SiteDetailPageProps) {
   }
 
   const hasWarning = site.status === "告警";
+  const capacityMw = Number(site.capacity);
+  const pvPowerMw = Number(site.currentPower);
+  const storagePowerMw = Number((pvPowerMw * (hasWarning ? -0.22 : 0.18)).toFixed(2));
+  const loadPowerMw = Number((pvPowerMw * 0.74 + capacityMw * 0.08).toFixed(2));
+  const gridPowerMw = Number((pvPowerMw + storagePowerMw - loadPowerMw).toFixed(2));
+  const co2ReductionTons = Number((pvPowerMw * 0.86).toFixed(2));
+  const treeEquivalent = Math.round(co2ReductionTons * 46);
+  const arbitrageIncome = Math.round(Math.abs(storagePowerMw) * 1600 + Math.max(gridPowerMw, 0) * 860);
 
   return (
     <main className="h-screen overflow-hidden bg-[#f6f6f8] text-slate-900">
-      <div className="flex h-full flex-col gap-6 p-4 md:p-6">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="flex flex-col gap-1">
-            <h1 className="text-4xl font-bold tracking-tight">{site.name}</h1>
-            <p className="text-sm text-slate-500">实时设备拓扑图与状态监控</p>
-          </div>
-          <button className="flex h-10 items-center justify-center gap-2 rounded-lg bg-[#135bec] px-4 text-sm font-medium text-white shadow-sm transition-colors hover:bg-[#0f4cc7]">
-            ⬇
-            导出报表
-          </button>
-        </div>
-
-        <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <div className="flex items-start gap-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="rounded-lg bg-[#135bec]/10 p-2 text-[#135bec]">📍</div>
-            <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium text-slate-500">位置</span>
-              <span className="text-lg font-bold text-slate-900">{site.location}</span>
-            </div>
-          </div>
-          <div className="flex items-start gap-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="rounded-lg bg-[#135bec]/10 p-2 text-[#135bec]">⚡</div>
-            <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium text-slate-500">装机容量</span>
-              <span className="text-lg font-bold text-slate-900">{site.capacity} MW</span>
-            </div>
-          </div>
-          <div className="flex items-start gap-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="rounded-lg bg-orange-500/10 p-2 text-orange-500">☀</div>
-            <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium text-slate-500">天气</span>
-              <span className="text-lg font-bold text-slate-900">{site.weather}</span>
-            </div>
-          </div>
-          <div
-            className={`flex items-start gap-4 rounded-xl p-5 shadow-sm ${
-              hasWarning ? "border border-red-500/30 bg-red-50" : "border border-emerald-500/30 bg-emerald-50"
-            }`}
-          >
-            <div className={`rounded-lg p-2 ${hasWarning ? "bg-red-500/20 text-red-500" : "bg-emerald-500/20 text-emerald-600"}`}>
-              {hasWarning ? "!" : "✓"}
-            </div>
-            <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium text-slate-500">状态</span>
-              <span className={`text-lg font-bold ${hasWarning ? "text-red-600" : "text-emerald-600"}`}>
-                {hasWarning ? "部分告警" : "运行正常"}
-              </span>
-            </div>
-          </div>
-        </section>
-
-        <section className="min-h-0 flex-1">
-          <SiteTopologyFlow />
-        </section>
-      </div>
+      <SiteTopologyFlow
+        fullScreen
+        dashboardData={{
+          siteName: site.name,
+          location: site.location,
+          capacity: site.capacity,
+          weather: site.weather,
+          hasWarning,
+          pvPowerMw,
+          storagePowerMw,
+          loadPowerMw,
+          gridPowerMw,
+          treeEquivalent,
+          co2ReductionTons,
+          arbitrageIncome,
+        }}
+      />
     </main>
   );
 }
