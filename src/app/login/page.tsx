@@ -27,7 +27,7 @@ export default function LoginPage() {
             </p>
           </div>
 
-          <form className="flex flex-col gap-5" action="/sites/alpha">
+          <form className="flex flex-col gap-5" action="/sites/alpha/2d">
             <label className="flex w-full flex-col gap-1">
               <span className="text-sm font-bold text-slate-700">用户名</span>
               <div className="relative">

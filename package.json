@@ -11,6 +11,7 @@
   "dependencies": {
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.5.0",
+    "@xyflow/react": "^12.10.1",
     "highcharts": "^12.5.0",
     "highcharts-react-official": "^3.2.3",
     "next": "16.1.6",
