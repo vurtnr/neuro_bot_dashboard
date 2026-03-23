@@ -13,6 +13,7 @@ import {
   Html,
   Instance,
   Instances,
+  Lightformer,
   OrbitControls,
   Sky,
   useGLTF,
@@ -165,7 +166,6 @@ const SCENE_PRESETS = {
     hemisphereSky: "#dff1ff",
     hemisphereGround: "#73808f",
     hemisphereIntensity: 0.82,
-    environment: "city" as const,
     groundColor: "#dbe3ec",
     contactShadow: { opacity: 0.55, scale: 90, blur: 2.8, far: 45 },
   },
@@ -191,7 +191,6 @@ const SCENE_PRESETS = {
     hemisphereSky: "#ffd7b4",
     hemisphereGround: "#6f6561",
     hemisphereIntensity: 0.65,
-    environment: "sunset" as const,
     groundColor: "#d6d0ca",
     contactShadow: { opacity: 0.72, scale: 100, blur: 2.2, far: 55 },
   },
@@ -199,6 +198,39 @@ const SCENE_PRESETS = {
 
 type ScenePresetKey = keyof typeof SCENE_PRESETS;
 type ScenePreset = (typeof SCENE_PRESETS)[ScenePresetKey];
+
+function SceneEnvironment({ preset }: { preset: ScenePreset }) {
+  const isDay = preset.name === "白天航拍";
+
+  return (
+    <Environment resolution={128}>
+      <Lightformer
+        form="rect"
+        intensity={isDay ? 1.8 : 2.4}
+        color={preset.directionalColor}
+        position={[0, 12, -18]}
+        rotation-x={Math.PI / 2}
+        scale={[42, 20, 1]}
+      />
+      <Lightformer
+        form="rect"
+        intensity={isDay ? 0.85 : 1.2}
+        color={preset.hemisphereSky}
+        position={[-16, 7, 14]}
+        rotation-y={Math.PI / 3}
+        scale={[18, 14, 1]}
+      />
+      <Lightformer
+        form="rect"
+        intensity={isDay ? 0.45 : 0.75}
+        color={preset.hemisphereGround}
+        position={[16, 4, 10]}
+        rotation-y={-Math.PI / 4}
+        scale={[12, 10, 1]}
+      />
+    </Environment>
+  );
+}
 
 export interface SiteDashboardData {
   siteName: string;
@@ -1558,7 +1590,7 @@ function Scene({
           isDay={preset.name === "白天航拍"}
         />
 
-        <Environment preset={preset.environment} />
+        <SceneEnvironment preset={preset} />
         <ContactShadows
           position={[0, -0.02, 0]}
           frames={1}

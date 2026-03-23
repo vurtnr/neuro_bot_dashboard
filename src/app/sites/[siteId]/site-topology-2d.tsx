@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Background,
   Controls,
@@ -17,6 +17,9 @@ import "@xyflow/react/dist/style.css";
 import Highcharts from "highcharts";
 import HighchartsReact from "highcharts-react-official";
 import { useParams, useRouter } from "next/navigation";
+import RobotInspectionModal from "@/components/robot-inspection-modal";
+import { getResolvedWorkOrderNodeIds } from "@/lib/work-order-resolution";
+import { useRobotInspection } from "@/lib/robot-inspection/use-robot-inspection";
 import { generateMinuteLevelData } from "@/utils";
 import SiteTopologyFlow from "./site-topology-flow";
 
@@ -587,15 +590,56 @@ export default function SiteTopology2D({
   dashboardData: Site2DDashboardData;
 }) {
   const router = useRouter();
+  const { beginInspection, closeDialog, dialogState } = useRobotInspection();
   const routeParams = useParams<{ siteId: string }>();
   const siteId = routeParams.siteId;
   const [topologyView, setTopologyView] = useState<"2d" | "3d">("2d");
   const [ncuPanelOpen, setNcuPanelOpen] = useState(true);
   const [cabinetPanelOpen, setCabinetPanelOpen] = useState(true);
+  const [resolvedWorkOrderNodeIds, setResolvedWorkOrderNodeIds] = useState<string[]>([]);
   const pageTheme = THEME.day;
   const topologyTheme = THEME.day;
-  const pvRuntimeData = useMemo(() => createPvRuntimeData(155), []);
-  const cabinetRuntimeData = useMemo(() => createCabinetRuntimeData(), []);
+  const resolvedWorkOrderNodeIdSet = useMemo(
+    () => new Set(resolvedWorkOrderNodeIds),
+    [resolvedWorkOrderNodeIds],
+  );
+  const basePvRuntimeData = useMemo(() => createPvRuntimeData(155), []);
+  const baseCabinetRuntimeData = useMemo(() => createCabinetRuntimeData(), []);
+  const pvRuntimeData = useMemo(
+    () =>
+      basePvRuntimeData.map((item, index) => ({
+        ...item,
+        hasWorkOrder:
+          item.hasWorkOrder && !resolvedWorkOrderNodeIdSet.has(`ncu-${index + 1}`),
+      })),
+    [basePvRuntimeData, resolvedWorkOrderNodeIdSet],
+  );
+  const cabinetRuntimeData = useMemo(
+    () =>
+      baseCabinetRuntimeData.map((item, index) => ({
+        ...item,
+        hasWorkOrder:
+          item.hasWorkOrder &&
+          !resolvedWorkOrderNodeIdSet.has(`cabinet-${index + 1}`),
+      })),
+    [baseCabinetRuntimeData, resolvedWorkOrderNodeIdSet],
+  );
+
+  useEffect(() => {
+    const syncResolvedWorkOrders = () => {
+      setResolvedWorkOrderNodeIds(getResolvedWorkOrderNodeIds(siteId));
+    };
+
+    syncResolvedWorkOrders();
+    window.addEventListener("focus", syncResolvedWorkOrders);
+    window.addEventListener("pageshow", syncResolvedWorkOrders);
+
+    return () => {
+      window.removeEventListener("focus", syncResolvedWorkOrders);
+      window.removeEventListener("pageshow", syncResolvedWorkOrders);
+    };
+  }, [siteId]);
+
   const ncuOverview = useMemo(() => {
     const counts: Record<DeviceStatus, number> = {
       normal: 0,
@@ -1205,14 +1249,37 @@ export default function SiteTopology2D({
       nodeType: String(node.type),
       nodeLabel: String(node.data?.label ?? ""),
       nodeId: node.id,
+      returnTo: `/sites/${siteId}/2d`,
     });
 
-    router.push(`/sites/${siteId}/devices/${DEVICE_DETAIL_ID}?${query.toString()}`);
+    const targetUrl = `/sites/${siteId}/devices/${DEVICE_DETAIL_ID}?${query.toString()}`;
+    if (hasWorkOrder === "1") {
+      void beginInspection(
+        {
+          siteId,
+          nodeId: node.id,
+          nodeLabel: String(node.data?.label ?? ""),
+        },
+        () => {
+          router.push(targetUrl);
+        },
+      );
+      return;
+    }
+
+    router.push(targetUrl);
   };
 
   return (
     <ReactFlowProvider>
       <div className={`h-screen w-screen overflow-hidden bg-gradient-to-br ${pageTheme.shell} text-slate-900`}>
+        <RobotInspectionModal
+          open={dialogState.open}
+          loading={dialogState.loading}
+          message={dialogState.message}
+          error={dialogState.error}
+          onClose={closeDialog}
+        />
         <div className="flex h-full w-full flex-col gap-2 p-2">
           <header
             className={`rounded-2xl border px-4 py-3 backdrop-blur-sm ${pageTheme.panel} ${pageTheme.panelShadow}`}
