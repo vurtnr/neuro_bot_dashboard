@@ -1,0 +1,59 @@
+# This file translates the proxy intent from frontend/default.conf into K8s Ingress rules.
+# The app routes stay on the frontend service. The two API path families are proxied
+# to the external scpapi.trinasolar.com upstream by using an ExternalName service.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: robot-dashboard-frontend
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "20m"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - frontend.example.com
+      secretName: frontend-example-com-tls
+  rules:
+    - host: frontend.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: robot-dashboard-frontend
+                port:
+                  number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: robot-dashboard-frontend-api
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - frontend.example.com
+      secretName: frontend-example-com-tls
+  rules:
+    - host: frontend.example.com
+      http:
+        paths:
+          - path: /defaultApi(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: scpapi-external
+                port:
+                  number: 443
+          - path: /scp-product/defaultApi(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: scpapi-external
+                port:
+                  number: 443

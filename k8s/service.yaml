@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: robot-dashboard-frontend
+spec:
+  type: ClusterIP
+  selector:
+    app: robot-dashboard-frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scpapi-external
+spec:
+  type: ExternalName
+  externalName: scpapi.trinasolar.com
+  ports:
+    - name: https
+      port: 443
+      targetPort: 443

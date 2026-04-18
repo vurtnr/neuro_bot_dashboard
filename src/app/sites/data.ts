@@ -14,6 +14,18 @@ export interface SiteCardData {
 
 export const siteCards: SiteCardData[] = [
   {
+    id: "qinghai-gonghexian",
+    name: "青海场站",
+    location: "中国青海，共和县",
+    status: "告警",
+    currentPower: "25.5",
+    capacity: "34.0",
+    weather: "晴，17°C",
+    hint: "支架NCU N5 参数异常",
+    imageUrl:
+      "https://images.unsplash.com/photo-1509391366360-2e959784a276?auto=format&fit=crop&w=1400&q=80",
+  },
+  {
     id: "alpha",
     name: "Alpha 场站",
     location: "亚利桑那州，沙漠谷",

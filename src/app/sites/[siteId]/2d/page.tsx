@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import { Suspense } from "react";
 import { getSiteById, siteCards } from "../../data";
 import SiteTopology2D from "../site-topology-2d";
 
@@ -54,22 +55,30 @@ export default async function SiteDetail2DPage({ params }: SiteDetail2DPageProps
 
   return (
     <main className="min-h-screen overflow-hidden bg-[#f6f6f8] text-slate-900">
-      <SiteTopology2D
-        dashboardData={{
-          siteName: site.name,
-          location: site.location,
-          capacity: site.capacity,
-          weather: site.weather,
-          hasWarning,
-          pvPowerMw,
-          storagePowerMw,
-          loadPowerMw,
-          gridPowerMw,
-          treeEquivalent,
-          co2ReductionTons,
-          arbitrageIncome,
-        }}
-      />
+      <Suspense
+        fallback={
+          <div className="flex min-h-screen items-center justify-center bg-slate-100 text-sm font-medium text-slate-500">
+            正在加载场站详情...
+          </div>
+        }
+      >
+        <SiteTopology2D
+          dashboardData={{
+            siteName: site.name,
+            location: site.location,
+            capacity: site.capacity,
+            weather: site.weather,
+            hasWarning,
+            pvPowerMw,
+            storagePowerMw,
+            loadPowerMw,
+            gridPowerMw,
+            treeEquivalent,
+            co2ReductionTons,
+            arbitrageIncome,
+          }}
+        />
+      </Suspense>
     </main>
   );
 }

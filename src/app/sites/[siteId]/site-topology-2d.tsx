@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   Controls,
@@ -12,16 +12,24 @@ import {
   type Edge,
   type Node,
   type NodeProps,
+  type ReactFlowInstance,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import Highcharts from "highcharts";
 import HighchartsReact from "highcharts-react-official";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import RobotInspectionModal from "@/components/robot-inspection-modal";
+import RobotPatrolLockCard from "@/components/robot-patrol-lock-card";
+import RobotPatrolModal from "@/components/robot-patrol-modal";
+import {
+  subscribeQinghaiSitePatrolEvents,
+} from "@/lib/robot-inspection/site-patrol";
 import { getResolvedWorkOrderNodeIds } from "@/lib/work-order-resolution";
 import { useRobotInspection } from "@/lib/robot-inspection/use-robot-inspection";
+import { useRobotPatrol } from "@/lib/robot-inspection/use-robot-patrol";
 import { generateMinuteLevelData } from "@/utils";
 import SiteTopologyFlow from "./site-topology-flow";
+import type { PatrolLockedDevice, RobotInspectionEvent } from "@/lib/robot-inspection/types";
 
 type ThemeMode = "day" | "sunset";
 type DeviceStatus = "normal" | "warning" | "fault" | "offline";
@@ -42,6 +50,9 @@ type TopologyNodeData = {
   status?: DeviceStatus;
   hasWorkOrder?: boolean;
   metrics?: CabinetMetrics;
+  disabled?: boolean;
+  locked?: boolean;
+  highlighted?: boolean;
 };
 
 const THEME = {
@@ -123,6 +134,42 @@ const STATUS_LABELS: Record<DeviceStatus, string> = {
 const STATUS_ORDER: DeviceStatus[] = ["normal", "warning", "fault", "offline"];
 const DEVICE_DETAIL_ID = "inverter-b";
 
+function parseInspectionAngles(event: RobotInspectionEvent): {
+  actualAngle: number;
+  targetAngle: number;
+} | null {
+  if (
+    typeof event.actualAngle === "number" &&
+    Number.isFinite(event.actualAngle) &&
+    typeof event.targetAngle === "number" &&
+    Number.isFinite(event.targetAngle)
+  ) {
+    return {
+      actualAngle: event.actualAngle,
+      targetAngle: event.targetAngle,
+    };
+  }
+
+  const message = event.message ?? "";
+  const matched = message.match(
+    /actual_angle=(-?\d+(?:\.\d+)?)\s+target_angle=(-?\d+(?:\.\d+)?)/,
+  );
+  if (!matched) {
+    return null;
+  }
+
+  const actualAngle = Number(matched[1]);
+  const targetAngle = Number(matched[2]);
+  if (!Number.isFinite(actualAngle) || !Number.isFinite(targetAngle)) {
+    return null;
+  }
+
+  return {
+    actualAngle,
+    targetAngle,
+  };
+}
+
 function seededShuffle<T>(list: T[], seed = 20260309): T[] {
   const result = [...list];
   let state = seed >>> 0;
@@ -179,16 +226,10 @@ function createPvStatusPool(total: number): DeviceStatus[] {
 }
 
 function createPvRuntimeData(total: number) {
-  return createPvStatusPool(total).map((status, index) => {
-    const signal = ((index * 37 + 11) % 100) / 100;
-    const hasWorkOrder =
-      status === "fault" ||
-      (status === "warning" && signal < 0.55) ||
-      (status === "offline" && signal < 0.3) ||
-      (status === "normal" && signal < 0.025);
-
-    return { status, hasWorkOrder };
-  });
+  return createPvStatusPool(total).map((status) => ({
+    status,
+    hasWorkOrder: false,
+  }));
 }
 
 function deriveCabinetStatus(metrics: CabinetMetrics): DeviceStatus {
@@ -230,10 +271,9 @@ function createCabinetRuntimeData() {
     { temperature: 45, soc: 64, current: 102, voltage: 714 },
   ];
 
-  return metricsList.map((metrics, index) => {
+  return metricsList.map((metrics) => {
     const status = deriveCabinetStatus(metrics);
-    const hasWorkOrder = status !== "normal" || index === 1;
-    return { metrics, status, hasWorkOrder };
+    return { metrics, status, hasWorkOrder: false };
   });
 }
 
@@ -357,19 +397,37 @@ function createTrendOptions({
 function NcuNode({ data }: NodeProps<Node<TopologyNodeData>>) {
   const status = data.status ?? "normal";
   const palette = STATUS_COLORS[status];
+  const disabled = Boolean(data.disabled);
+  const locked = Boolean(data.locked);
+  const highlighted = Boolean(data.highlighted);
 
   return (
     <div
-      className="relative flex h-[38px] w-[72px] items-center justify-center rounded-md text-[11px] font-semibold"
+      className="relative flex h-[38px] w-[72px] items-center justify-center rounded-md text-[11px] font-semibold transition"
       style={{
         background: palette.background,
         border: `1px solid ${palette.border}`,
         color: palette.text,
-        boxShadow: `0 0 0 1px rgba(255,255,255,0.65) inset`,
+        boxShadow: highlighted
+          ? "0 0 0 3px rgba(239,68,68,0.28), 0 0 0 1px rgba(255,255,255,0.72) inset, 0 0 24px rgba(239,68,68,0.24)"
+          : locked
+            ? "0 0 0 2px rgba(14,165,233,0.35), 0 0 0 1px rgba(255,255,255,0.65) inset"
+            : `0 0 0 1px rgba(255,255,255,0.65) inset`,
+        opacity: disabled ? 0.42 : 1,
+        transform: highlighted
+          ? "translateY(-1px) scale(1.03)"
+          : locked
+            ? "translateY(-1px)"
+            : undefined,
       }}
     >
       {data.label}
       {data.hasWorkOrder ? <WorkOrderBadge /> : null}
+      {locked ? (
+        <span className="absolute -top-2 -right-2 rounded-full border border-cyan-200 bg-cyan-50 px-1.5 py-0.5 text-[9px] font-semibold text-cyan-700">
+          锁定
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -377,15 +435,28 @@ function NcuNode({ data }: NodeProps<Node<TopologyNodeData>>) {
 function CabinetNode({ data }: NodeProps<Node<TopologyNodeData>>) {
   const status = data.status ?? "normal";
   const palette = STATUS_COLORS[status];
+  const disabled = Boolean(data.disabled);
+  const locked = Boolean(data.locked);
+  const highlighted = Boolean(data.highlighted);
 
   return (
     <div
-      className="relative flex h-[64px] w-[132px] flex-col justify-center rounded-lg px-2"
+      className="relative flex h-[64px] w-[132px] flex-col justify-center rounded-lg px-2 transition"
       style={{
         background: palette.background,
         border: `1px solid ${palette.border}`,
         color: palette.text,
-        boxShadow: `0 8px 18px rgba(15,23,42,0.08)`,
+        boxShadow: highlighted
+          ? "0 0 0 3px rgba(239,68,68,0.24), 0 12px 28px rgba(239,68,68,0.18)"
+          : locked
+            ? "0 0 0 2px rgba(14,165,233,0.3), 0 12px 22px rgba(15,23,42,0.12)"
+            : `0 8px 18px rgba(15,23,42,0.08)`,
+        opacity: disabled ? 0.42 : 1,
+        transform: highlighted
+          ? "translateY(-1px) scale(1.02)"
+          : locked
+            ? "translateY(-1px)"
+            : undefined,
       }}
     >
       <Handle
@@ -406,6 +477,11 @@ function CabinetNode({ data }: NodeProps<Node<TopologyNodeData>>) {
       </span>
       <span className="text-[10px] opacity-80">{data.subtitle ?? "储能电柜"}</span>
       {data.hasWorkOrder ? <WorkOrderBadge /> : null}
+      {locked ? (
+        <span className="absolute -top-2 right-2 rounded-full border border-cyan-200 bg-cyan-50 px-1.5 py-0.5 text-[9px] font-semibold text-cyan-700">
+          锁定
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -584,25 +660,62 @@ interface Site2DDashboardData {
   arbitrageIncome: number;
 }
 
+type SiteToastState = {
+  tone: "info" | "critical";
+  message: string;
+  actionable?: boolean;
+};
+
 export default function SiteTopology2D({
   dashboardData,
 }: {
   dashboardData: Site2DDashboardData;
 }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { beginInspection, closeDialog, dialogState } = useRobotInspection();
   const routeParams = useParams<{ siteId: string }>();
   const siteId = routeParams.siteId;
+  const reviewNodeId = searchParams.get("reviewNodeId");
+  const {
+    patrolState,
+    startPatrol,
+    stopPatrol,
+    dismissPatrolError,
+  } = useRobotPatrol(siteId);
   const [topologyView, setTopologyView] = useState<"2d" | "3d">("2d");
+  const [isTopologyFullscreen, setIsTopologyFullscreen] = useState(false);
   const [ncuPanelOpen, setNcuPanelOpen] = useState(true);
   const [cabinetPanelOpen, setCabinetPanelOpen] = useState(true);
+  const [blockedNodeMessage, setBlockedNodeMessage] = useState("");
+  const [siteToast, setSiteToast] = useState<SiteToastState | null>(null);
+  const [simulatedReviewNodeId, setSimulatedReviewNodeId] = useState<string | null>(
+    null,
+  );
+  const [highlightedNodeId, setHighlightedNodeId] = useState<string | null>(null);
+  const [focusNodeId, setFocusNodeId] = useState<string | null>(null);
   const [resolvedWorkOrderNodeIds, setResolvedWorkOrderNodeIds] = useState<string[]>([]);
+  const topologyPanelRef = useRef<HTMLElement | null>(null);
+  const blockedNodeTimerRef = useRef<number | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
+  const reactFlowInstanceRef = useRef<
+    ReactFlowInstance<Node<TopologyNodeData>, Edge> | null
+  >(null);
   const pageTheme = THEME.day;
   const topologyTheme = THEME.day;
+  const lockedDevice = patrolState.lockedDevice;
+  const lockedNodeId = lockedDevice?.nodeId ?? null;
+  const patrolModalOpen =
+    patrolState.status === "starting" ||
+    patrolState.status === "announcing" ||
+    (patrolState.status === "error" && !lockedDevice);
+  const patrolModalLoading =
+    patrolState.status === "starting" || patrolState.status === "announcing";
   const resolvedWorkOrderNodeIdSet = useMemo(
     () => new Set(resolvedWorkOrderNodeIds),
     [resolvedWorkOrderNodeIds],
   );
+  const activeReviewNodeId = reviewNodeId ?? simulatedReviewNodeId;
   const basePvRuntimeData = useMemo(() => createPvRuntimeData(155), []);
   const baseCabinetRuntimeData = useMemo(() => createCabinetRuntimeData(), []);
   const pvRuntimeData = useMemo(
@@ -610,19 +723,24 @@ export default function SiteTopology2D({
       basePvRuntimeData.map((item, index) => ({
         ...item,
         hasWorkOrder:
-          item.hasWorkOrder && !resolvedWorkOrderNodeIdSet.has(`ncu-${index + 1}`),
+          activeReviewNodeId
+            ? `ncu-${index + 1}` === activeReviewNodeId &&
+              !resolvedWorkOrderNodeIdSet.has(`ncu-${index + 1}`)
+            : false,
       })),
-    [basePvRuntimeData, resolvedWorkOrderNodeIdSet],
+    [activeReviewNodeId, basePvRuntimeData, resolvedWorkOrderNodeIdSet],
   );
   const cabinetRuntimeData = useMemo(
     () =>
       baseCabinetRuntimeData.map((item, index) => ({
         ...item,
         hasWorkOrder:
-          item.hasWorkOrder &&
-          !resolvedWorkOrderNodeIdSet.has(`cabinet-${index + 1}`),
+          activeReviewNodeId
+            ? `cabinet-${index + 1}` === activeReviewNodeId &&
+              !resolvedWorkOrderNodeIdSet.has(`cabinet-${index + 1}`)
+            : false,
       })),
-    [baseCabinetRuntimeData, resolvedWorkOrderNodeIdSet],
+    [activeReviewNodeId, baseCabinetRuntimeData, resolvedWorkOrderNodeIdSet],
   );
 
   useEffect(() => {
@@ -639,6 +757,111 @@ export default function SiteTopology2D({
       window.removeEventListener("pageshow", syncResolvedWorkOrders);
     };
   }, [siteId]);
+
+  useEffect(() => {
+    const syncFullscreenState = () => {
+      setIsTopologyFullscreen(document.fullscreenElement === topologyPanelRef.current);
+    };
+
+    document.addEventListener("fullscreenchange", syncFullscreenState);
+
+    return () => {
+      document.removeEventListener("fullscreenchange", syncFullscreenState);
+    };
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (blockedNodeTimerRef.current !== null) {
+        window.clearTimeout(blockedNodeTimerRef.current);
+      }
+      if (toastTimerRef.current !== null) {
+        window.clearTimeout(toastTimerRef.current);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const pushSiteToast = (nextToast: SiteToastState) => {
+      setSiteToast(nextToast);
+      if (toastTimerRef.current !== null) {
+        window.clearTimeout(toastTimerRef.current);
+      }
+      toastTimerRef.current = window.setTimeout(() => {
+        setSiteToast(null);
+        toastTimerRef.current = null;
+      }, 4200);
+    };
+
+    const applyPatrolEvent = (event: RobotInspectionEvent) => {
+      if (event.siteId !== siteId) {
+        return;
+      }
+
+      if (event.event === "patrol_started") {
+        setSimulatedReviewNodeId(null);
+        setHighlightedNodeId(null);
+        pushSiteToast({
+          tone: "info",
+          message:
+            event.message ?? "机器人消息：已接收巡检任务，当前进入青海场站巡检模式",
+        });
+        return;
+      }
+
+      if (event.event !== "patrol_anomaly_detected") {
+        return;
+      }
+
+      setSimulatedReviewNodeId(event.nodeId ?? null);
+      pushSiteToast({
+        tone: "critical",
+        message:
+          event.message ??
+          "发生巡检事件：检测到青海场站支架NCU N5 参数异常，已同步至场站监控，点击查看详细信息。",
+        actionable: true,
+      });
+    };
+
+    const eventSource = subscribeQinghaiSitePatrolEvents(applyPatrolEvent, () => {
+      pushSiteToast({
+        tone: "critical",
+        message: "机器人巡检事件通道已断开，请检查桥接服务连接。",
+      });
+    });
+
+    return () => {
+      eventSource.close();
+    };
+  }, [siteId]);
+
+  const toggleTopologyFullscreen = async () => {
+    const panel = topologyPanelRef.current;
+    if (!panel) {
+      return;
+    }
+
+    if (document.fullscreenElement === panel) {
+      await document.exitFullscreen();
+      return;
+    }
+
+    if (!document.fullscreenElement) {
+      await panel.requestFullscreen();
+    }
+  };
+
+  const showTopologyTip = (message: string) => {
+    setBlockedNodeMessage(message);
+    if (blockedNodeTimerRef.current !== null) {
+      window.clearTimeout(blockedNodeTimerRef.current);
+    }
+    blockedNodeTimerRef.current = window.setTimeout(() => {
+      setBlockedNodeMessage("");
+      blockedNodeTimerRef.current = null;
+    }, 2200);
+  };
 
   const ncuOverview = useMemo(() => {
     const counts: Record<DeviceStatus, number> = {
@@ -997,6 +1220,7 @@ export default function SiteTopology2D({
   );
 
   const { nodes, edges } = useMemo(() => {
+    const activeLockedNodeId = lockedNodeId;
     const clusterCounts = [26, 26, 26, 26, 26, 25];
     const localCols = 6;
     const ncuWidth = 72;
@@ -1145,8 +1369,18 @@ export default function SiteTopology2D({
         const localRow = Math.floor(i / localCols);
         const localCol = i % localCols;
         const runtime = pvRuntimeData[ncuIndex - 1];
+        const nodeId = `ncu-${ncuIndex}`;
+        const interaction = activeLockedNodeId
+          ? {
+              disabled: nodeId !== activeLockedNodeId,
+              locked: nodeId === activeLockedNodeId,
+            }
+          : {
+              disabled: false,
+              locked: false,
+            };
         flowNodes.push({
-          id: `ncu-${ncuIndex}`,
+          id: nodeId,
           type: "ncu",
           position: {
             x: baseX + framePaddingX + localCol * ncuGapX,
@@ -1163,6 +1397,9 @@ export default function SiteTopology2D({
             mode: "day",
             status: runtime.status,
             hasWorkOrder: runtime.hasWorkOrder,
+            disabled: interaction.disabled,
+            locked: interaction.locked,
+            highlighted: nodeId === highlightedNodeId,
           },
         });
         ncuIndex += 1;
@@ -1197,8 +1434,18 @@ export default function SiteTopology2D({
       const indexInRow = i % 5;
       const displayIndex = row === 0 ? indexInRow : 4 - indexInRow;
       const runtime = cabinetRuntimeData[i];
+      const nodeId = `cabinet-${i + 1}`;
+      const interaction = activeLockedNodeId
+        ? {
+            disabled: nodeId !== activeLockedNodeId,
+            locked: nodeId === activeLockedNodeId,
+          }
+        : {
+            disabled: false,
+            locked: false,
+          };
       flowNodes.push({
-        id: `cabinet-${i + 1}`,
+        id: nodeId,
         type: "cabinet",
         position: {
           x: cabinetStartX + displayIndex * cabinetColGap,
@@ -1213,6 +1460,9 @@ export default function SiteTopology2D({
           status: runtime.status,
           hasWorkOrder: runtime.hasWorkOrder,
           metrics: runtime.metrics,
+          disabled: interaction.disabled,
+          locked: interaction.locked,
+          highlighted: nodeId === highlightedNodeId,
         },
       });
 
@@ -1232,7 +1482,89 @@ export default function SiteTopology2D({
     }
 
     return { nodes: flowNodes, edges: flowEdges };
-  }, [cabinetRuntimeData, pvRuntimeData, topologyTheme.flowEdge]);
+  }, [cabinetRuntimeData, highlightedNodeId, lockedNodeId, pvRuntimeData, topologyTheme.flowEdge]);
+
+  const handleSiteToastClick = () => {
+    if (!siteToast?.actionable || !simulatedReviewNodeId) {
+      return;
+    }
+
+    setTopologyView("2d");
+    setHighlightedNodeId(simulatedReviewNodeId);
+    setFocusNodeId(simulatedReviewNodeId);
+    showTopologyTip(`已定位异常设备 ${simulatedReviewNodeId.toUpperCase().replace("-", " ")}`);
+  };
+
+  useEffect(() => {
+    if (topologyView !== "2d" || !focusNodeId) {
+      return;
+    }
+
+    const flowInstance = reactFlowInstanceRef.current;
+    if (!flowInstance) {
+      return;
+    }
+
+    const targetNode = nodes.find((node) => node.id === focusNodeId);
+    if (!targetNode) {
+      return;
+    }
+
+    const nodeWidth = targetNode.measured?.width ?? targetNode.width ?? 72;
+    const nodeHeight = targetNode.measured?.height ?? targetNode.height ?? 38;
+    const centerX = targetNode.position.x + nodeWidth / 2;
+    const centerY = targetNode.position.y + nodeHeight / 2;
+
+    window.requestAnimationFrame(() => {
+      flowInstance.setCenter(centerX, centerY, {
+        zoom: 1.18,
+        duration: 420,
+      });
+      setFocusNodeId(null);
+    });
+  }, [focusNodeId, nodes, topologyView]);
+
+  const routeToDeviceDetail = (
+    device: Pick<PatrolLockedDevice, "nodeId" | "nodeLabel" | "nodeType">,
+    inspectionEvent?: RobotInspectionEvent,
+  ) => {
+    const query = new URLSearchParams({
+      hasWorkOrder: "1",
+      nodeType: device.nodeType,
+      nodeLabel: device.nodeLabel,
+      nodeId: device.nodeId,
+      returnTo: `/sites/${siteId}/2d`,
+    });
+
+    const inspectionAngles =
+      device.nodeType === "ncu" && inspectionEvent
+        ? parseInspectionAngles(inspectionEvent)
+        : null;
+    if (inspectionAngles) {
+      query.set("actualAngle", inspectionAngles.actualAngle.toFixed(1));
+      query.set("targetAngle", inspectionAngles.targetAngle.toFixed(1));
+    }
+
+    router.push(`/sites/${siteId}/devices/${DEVICE_DETAIL_ID}?${query.toString()}`);
+  };
+
+  const beginLockedDeviceInspection = () => {
+    if (!lockedDevice) {
+      showTopologyTip("当前巡检任务缺少锁定设备，请重新开始巡检。");
+      return;
+    }
+
+    void beginInspection(
+      {
+        siteId,
+        nodeId: lockedDevice.nodeId,
+        nodeLabel: lockedDevice.nodeLabel,
+      },
+      (event) => {
+        routeToDeviceDetail(lockedDevice, event);
+      },
+    );
+  };
 
   const handleTopologyNodeClick = (_: unknown, node: Node<TopologyNodeData>) => {
     if (topologyView !== "2d") {
@@ -1240,6 +1572,16 @@ export default function SiteTopology2D({
     }
 
     if (node.type !== "ncu" && node.type !== "cabinet") {
+      return;
+    }
+
+    if (lockedNodeId) {
+      if (node.id !== lockedNodeId) {
+        showTopologyTip("当前机器人正在处理已锁定设备");
+        return;
+      }
+
+      showTopologyTip("请使用右上角任务卡进行扫码连接");
       return;
     }
 
@@ -1260,8 +1602,15 @@ export default function SiteTopology2D({
           nodeId: node.id,
           nodeLabel: String(node.data?.label ?? ""),
         },
-        () => {
-          router.push(targetUrl);
+        (event) => {
+          routeToDeviceDetail(
+            {
+              nodeId: node.id,
+              nodeLabel: String(node.data?.label ?? ""),
+              nodeType: String(node.type),
+            },
+            event,
+          );
         },
       );
       return;
@@ -1280,6 +1629,40 @@ export default function SiteTopology2D({
           error={dialogState.error}
           onClose={closeDialog}
         />
+        <RobotPatrolModal
+          open={patrolModalOpen}
+          loading={patrolModalLoading}
+          message={patrolState.message}
+          error={patrolState.error}
+          onClose={dismissPatrolError}
+        />
+        {siteToast ? (
+          <div className="absolute top-4 left-1/2 z-50 -translate-x-1/2">
+            <button
+              type="button"
+              onClick={handleSiteToastClick}
+              disabled={!siteToast.actionable}
+              className={`flex items-center gap-3 rounded-full border px-5 py-3 shadow-[0_22px_50px_rgba(103,146,181,0.18)] backdrop-blur-xl ${
+                siteToast.tone === "critical"
+                  ? "border-red-200/90 bg-white/92 text-red-700"
+                  : "border-sky-100 bg-white/92 text-sky-800"
+              } ${siteToast.actionable ? "cursor-pointer" : "cursor-default"}`}
+            >
+              <span
+                className={`inline-flex h-8 w-8 items-center justify-center rounded-full text-sm font-bold ${
+                  siteToast.tone === "critical"
+                    ? "bg-red-50 text-red-600 ring-1 ring-red-100"
+                    : "bg-sky-50 text-sky-700 ring-1 ring-sky-100"
+                }`}
+              >
+                {siteToast.tone === "critical" ? "!" : "•"}
+              </span>
+              <p className="max-w-[860px] text-sm font-semibold leading-6">
+                {siteToast.message}
+              </p>
+            </button>
+          </div>
+        ) : null}
         <div className="flex h-full w-full flex-col gap-2 p-2">
           <header
             className={`rounded-2xl border px-4 py-3 backdrop-blur-sm ${pageTheme.panel} ${pageTheme.panelShadow}`}
@@ -1294,6 +1677,14 @@ export default function SiteTopology2D({
                   {dashboardData.location} · 装机容量 {dashboardData.capacity} MW
                 </p>
               </div>
+              <button
+                type="button"
+                onClick={() => router.push("/global-operations")}
+                className="inline-flex items-center gap-2 rounded-full border border-sky-200 bg-white/90 px-4 py-2 text-sm font-semibold text-sky-700 shadow-[0_10px_24px_rgba(14,116,144,0.12)] transition hover:border-sky-300 hover:text-sky-800"
+              >
+                <span aria-hidden="true">←</span>
+                返回全球运维总览
+              </button>
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-8">
               {overviewCards.map((card) => (
@@ -1326,13 +1717,34 @@ export default function SiteTopology2D({
             </section>
 
             <section
-              className={`min-h-0 overflow-hidden rounded-2xl border p-2.5 xl:col-span-6 xl:row-span-1 ${topologyTheme.panel} ${topologyTheme.panelShadow} flex flex-col`}
+              ref={topologyPanelRef}
+              className={`min-h-0 overflow-hidden border xl:col-span-6 xl:row-span-1 flex flex-col ${
+                isTopologyFullscreen
+                  ? `h-full w-full rounded-none p-4 shadow-none ${topologyTheme.panel}`
+                  : `rounded-2xl p-2.5 ${topologyTheme.panel} ${topologyTheme.panelShadow}`
+              }`}
             >
               <div className="mb-2 flex items-center justify-between px-1">
                 <p className={`text-xs font-semibold tracking-[0.08em] uppercase ${topologyTheme.accent}`}>
                   场站拓扑
                 </p>
                 <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void startPatrol();
+                    }}
+                    disabled={patrolState.status !== "idle" && patrolState.status !== "error"}
+                    className={`rounded-full px-3 py-1 text-[11px] font-semibold transition ${
+                      patrolState.status !== "idle" && patrolState.status !== "error"
+                        ? "cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400"
+                        : "border border-cyan-200 bg-cyan-50 text-cyan-700 hover:border-cyan-300 hover:bg-cyan-100"
+                    }`}
+                  >
+                    {patrolState.status === "locked" || patrolState.status === "cancelling"
+                      ? "巡检中"
+                      : "开始巡检"}
+                  </button>
                   <div className="inline-flex rounded-full border border-slate-200/80 bg-white/80 p-0.5">
                     <button
                       type="button"
@@ -1360,6 +1772,15 @@ export default function SiteTopology2D({
                   <span className={`rounded-full border px-2 py-0.5 text-[11px] ${topologyTheme.chip}`}>
                     155 NCU · 10 储能电柜
                   </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void toggleTopologyFullscreen();
+                    }}
+                    className="rounded-full border border-slate-200/80 bg-white/80 px-2.5 py-0.5 text-[11px] font-semibold text-slate-700 transition-colors hover:bg-slate-100/80"
+                  >
+                    {isTopologyFullscreen ? "退出全屏" : "全屏"}
+                  </button>
                 </div>
               </div>
               {topologyView === "2d" ? (
@@ -1391,12 +1812,31 @@ export default function SiteTopology2D({
                 </div>
               ) : null}
               <div
-                className="relative min-h-[540px] flex-1 overflow-hidden rounded-xl border border-white/70 xl:min-h-0"
+                className={`relative flex-1 overflow-hidden border border-white/70 ${
+                  isTopologyFullscreen
+                    ? "min-h-0 rounded-2xl"
+                    : "min-h-[540px] rounded-xl xl:min-h-0"
+                }`}
                 style={{ backgroundColor: topologyTheme.flowBg }}
               >
+                <RobotPatrolLockCard
+                  open={Boolean(lockedDevice)}
+                  device={lockedDevice}
+                  message={patrolState.message}
+                  error={patrolState.status === "locked" || patrolState.status === "cancelling" ? patrolState.error : ""}
+                  scanPending={dialogState.loading}
+                  stopPending={patrolState.status === "cancelling"}
+                  onConnect={beginLockedDeviceInspection}
+                  onStop={() => {
+                    void stopPatrol();
+                  }}
+                />
                 {topologyView === "2d" ? (
                   <>
                     <ReactFlow
+                      onInit={(instance) => {
+                        reactFlowInstanceRef.current = instance;
+                      }}
                       nodes={nodes}
                       edges={edges}
                       nodeTypes={nodeTypes}
@@ -1422,6 +1862,12 @@ export default function SiteTopology2D({
                         style={{ marginLeft: 16, marginBottom: 24 }}
                       />
                     </ReactFlow>
+
+                    {blockedNodeMessage ? (
+                      <div className="pointer-events-none absolute right-4 bottom-4 z-30 max-w-[320px] rounded-2xl border border-slate-200/85 bg-white/92 px-4 py-3 text-sm font-medium text-slate-700 shadow-[0_14px_34px_rgba(15,23,42,0.12)] backdrop-blur-sm">
+                        {blockedNodeMessage}
+                      </div>
+                    ) : null}
 
                     {ncuPanelOpen ? (
                       <div className="pointer-events-auto absolute top-4 left-4 z-20 w-[248px] overflow-hidden rounded-xl border border-sky-200/80 bg-white/88 shadow-[0_10px_24px_rgba(14,116,144,0.18)] backdrop-blur-sm">

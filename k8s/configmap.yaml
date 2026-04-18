@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: robot-dashboard-frontend-config
+data:
+  NEXT_PUBLIC_ROBOT_BASE_URL: "https://robot-api.example.com"
+  NEXT_PUBLIC_ROBOT_VIDEO_BASE_URL: "https://robot-video.example.com"
+  NEXT_PUBLIC_TIANDITU_KEY: "c0cf6d9f223c83540c8b52d1faaf7bae"

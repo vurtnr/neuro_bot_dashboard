@@ -27,7 +27,7 @@ export default function LoginPage() {
             </p>
           </div>
 
-          <form className="flex flex-col gap-5" action="/sites/alpha/2d">
+          <form className="flex flex-col gap-5" action="/global-operations">
             <label className="flex w-full flex-col gap-1">
               <span className="text-sm font-bold text-slate-700">用户名</span>
               <div className="relative">
@@ -104,8 +104,7 @@ export default function LoginPage() {
         <div
           className="absolute inset-0 bg-cover bg-center bg-no-repeat"
           style={{
-            backgroundImage:
-              "url('https://lh3.googleusercontent.com/aida-public/AB6AXuDC5iV5iOy0cirH4v8RUwGzpbu1BuBPN01Rf-01KdLRoHcFbxEZpBUYvI-CVmer70o8cy55nxyakgN-gTupM8wYPGmdtxcn-RBq7N8BAaTyiIA68HRL4cID9VXYLwnnfi7-psObpFOAFYf3BNHSPdID7XIJKPijMJjXFWnH3oiCt0y7uLNN7Oip3qs45Li2drqe79Jc6aBpai5rgstEJz0jEB2gd67tyNTsQqfBcnWT549sckgZECHpwDq14YQgDHcepfp4ZdL8ub4o')",
+            backgroundImage: "url('/background.png')",
           }}
         />
 

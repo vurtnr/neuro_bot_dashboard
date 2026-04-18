@@ -89,7 +89,7 @@ export function useRobotInspection() {
   const beginInspection = useCallback(
     async (
       payload: Omit<StartInspectionPayload, "requestId">,
-      onSuccess: () => void,
+      onSuccess: (event: RobotInspectionEvent) => void,
     ) => {
       cleanup();
       setDialogState({
@@ -108,7 +108,7 @@ export function useRobotInspection() {
             if (event.event === "success") {
               cleanup();
               setDialogState(INITIAL_STATE);
-              onSuccess();
+              onSuccess(event);
               return;
             }
 

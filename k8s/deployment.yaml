@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: robot-dashboard-frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: robot-dashboard-frontend
+  template:
+    metadata:
+      labels:
+        app: robot-dashboard-frontend
+    spec:
+      containers:
+        - name: frontend
+          image: bizdevops-crepo.trinasolar.com/z5a9f1/docker-local/robot_monitoring:1.1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+              name: http
+          envFrom:
+            - configMapRef:
+                name: robot-dashboard-frontend-config
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi

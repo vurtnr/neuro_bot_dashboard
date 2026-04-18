@@ -8,7 +8,13 @@ import HighchartsReact from "highcharts-react-official";
 import {
   captureWorkOrderSnapshot,
   completeWorkOrder,
+  manualAngleControl,
 } from "@/lib/robot-inspection/client";
+import {
+  clearPatrolSession,
+  getPatrolSessionForSite,
+  matchesPatrolLockedDevice,
+} from "@/lib/robot-inspection/patrol-session";
 import {
   getRobotCameraEmbeddedViewerPath,
   getRobotVideoBaseUrl,
@@ -30,6 +36,11 @@ type DeviceMetric = {
   label: string;
   value: string;
   trend: string;
+};
+
+type InspectionAngleSnapshot = {
+  actualAngle: number;
+  targetAngle: number;
 };
 
 type RegionPreview = {
@@ -84,7 +95,23 @@ type SubmitDialogState = {
   tone: SubmitDialogTone;
 };
 
-type RequiredWorkOrderField = "evidence" | "diagnosis" | "repairAction";
+type RequiredWorkOrderField =
+  | "evidence"
+  | "diagnosis"
+  | "repairAction"
+  | "manualAngle";
+
+type ManualAngleDirection = "west" | "east";
+
+type ManualAngleFeedback = {
+  direction: ManualAngleDirection;
+  actualAngleUsed: number;
+  verifiedActualAngle: number;
+  verifiedChanged: boolean;
+  targetAngle: number;
+  deltaAngleUsed: number;
+  message: string;
+};
 
 const WORK_ORDER_STATUS_META: Record<
   WorkOrderStatus,
@@ -104,7 +131,11 @@ const REQUIRED_WORK_ORDER_FIELD_LABELS: Record<RequiredWorkOrderField, string> =
   evidence: "证据与照片",
   diagnosis: "故障诊断",
   repairAction: "维修操作",
+  manualAngle: "姿态纠偏",
 };
+
+const PHOTOVOLTAIC_FAULT_COMPONENT = "姿态控制机构";
+const PHOTOVOLTAIC_FAULT_MODE = "角度偏差影响发电效率";
 
 const INITIAL_SUBMIT_DIALOG_STATE: SubmitDialogState = {
   open: false,
@@ -117,7 +148,25 @@ function parseDeviceType(value: string | null): NodeDeviceType {
   return value === "cabinet" ? "cabinet" : "ncu";
 }
 
-function buildMetrics(type: NodeDeviceType, seed: number, hasWarning: boolean): DeviceMetric[] {
+function parseAngleSearchParam(value: string | null): number | null {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+
+  return Number(parsed.toFixed(1));
+}
+
+function buildMetrics(
+  type: NodeDeviceType,
+  seed: number,
+  hasWarning: boolean,
+  angleSnapshot?: InspectionAngleSnapshot | null,
+): DeviceMetric[] {
   if (type === "cabinet") {
     const soc = Math.max(12, Math.min(96, 76 - (seed % 9) * 4));
     const temperature = (34 + (seed % 7) * 4.3).toFixed(1);
@@ -135,20 +184,34 @@ function buildMetrics(type: NodeDeviceType, seed: number, hasWarning: boolean): 
     ];
   }
 
-  const actualAngle = (15 + (seed % 12) * 2.1).toFixed(1);
-  const targetAngle = (Number(actualAngle) + (seed % 3 === 0 ? 1.2 : -0.8)).toFixed(1);
+  const actualAngleValue =
+    angleSnapshot?.actualAngle ?? Number((15 + (seed % 12) * 2.1).toFixed(1));
+  const targetAngleValue =
+    angleSnapshot?.targetAngle ??
+    Number((actualAngleValue + (seed % 3 === 0 ? 1.2 : -0.8)).toFixed(1));
+  const actualAngle = actualAngleValue.toFixed(1);
+  const targetAngle = targetAngleValue.toFixed(1);
   const motorCurrent = (2.3 + (seed % 8) * 0.34).toFixed(2);
   const motorVoltage = (24.4 + (seed % 6) * 0.8).toFixed(1);
+  const hasLiveAngles = Boolean(angleSnapshot);
 
   return [
-    { label: "实际角度", value: `${actualAngle}°`, trend: "实时追日" },
-    { label: "目标角度", value: `${targetAngle}°`, trend: "模型下发" },
+    {
+      label: "实际角度",
+      value: `${actualAngle}°`,
+      trend: hasLiveAngles ? "设备实测" : "实时追日",
+    },
+    {
+      label: "目标角度",
+      value: `${targetAngle}°`,
+      trend: hasLiveAngles ? "控制器回传" : "模型下发",
+    },
     { label: "电机电流", value: `${motorCurrent} A`, trend: hasWarning ? "扭矩偏高" : "负载正常" },
     { label: "电机电压", value: `${motorVoltage} V`, trend: "驱动稳定" },
     {
       label: "跟踪偏差",
-      value: `${Math.abs(Number(actualAngle) - Number(targetAngle)).toFixed(1)}°`,
-      trend: "闭环修正中",
+      value: `${Math.abs(actualAngleValue - targetAngleValue).toFixed(1)}°`,
+      trend: hasLiveAngles ? "查询回传" : "闭环修正中",
     },
     { label: "工作模式", value: "自动模式", trend: "已联动辐照策略" },
   ];
@@ -225,13 +288,13 @@ function buildRegionPreviews(type: NodeDeviceType): RegionPreview[] {
 function buildFaultComponentOptions(type: NodeDeviceType): string[] {
   return type === "cabinet"
     ? ["", "簇温升区域", "接线端子", "PCS接口位"]
-    : ["", "驱动电机", "接线端子", "控制接口位"];
+    : ["", PHOTOVOLTAIC_FAULT_COMPONENT, "驱动电机", "接线端子", "控制接口位"];
 }
 
 function buildFaultModeOptions(type: NodeDeviceType): string[] {
   return type === "cabinet"
     ? ["", "局部温升异常", "接触不良", "接口位热衰减"]
-    : ["", "热异常", "接触不良", "姿态控制偏差"];
+    : ["", PHOTOVOLTAIC_FAULT_MODE, "热异常", "接触不良", "姿态控制偏差"];
 }
 
 function buildMockWorkOrderForm(
@@ -251,11 +314,11 @@ function buildMockWorkOrderForm(
   }
 
   return {
-    faultComponent: "驱动电机",
-    faultMode: "热异常",
-    diagnosis: `${readableTime} 抓拍结果显示 ${nodeLabel} 驱动区域存在温升和姿态响应滞后，疑似电机负载偏高或端子接触不稳定导致。`,
-    repairAction: "已安排检查驱动机构紧固状态与端子压接情况，并对电机电流波动进行复测。",
-    partName: "驱动电机组件",
+    faultComponent: PHOTOVOLTAIC_FAULT_COMPONENT,
+    faultMode: PHOTOVOLTAIC_FAULT_MODE,
+    diagnosis: `${readableTime} 抓拍结果显示 ${nodeLabel} 当前姿态角度与目标跟踪角度存在偏差，已影响发电效率与对日响应稳定性。建议先执行一次姿态纠偏，再复核支架跟踪状态。`,
+    repairAction: "建议先执行一次手动向西或向东姿态纠偏，并在纠偏后复核支架跟踪偏差、驱动响应与发电恢复情况。",
+    partName: "姿态控制机构组件",
   };
 }
 
@@ -284,6 +347,8 @@ function normalizeWorkOrderFormValues(
 function getMissingWorkOrderFields(
   values: WorkOrderFormValues,
   evidence: CameraEvidence[],
+  type: NodeDeviceType,
+  hasManualAngleFeedback: boolean,
 ): RequiredWorkOrderField[] {
   const normalizedValues = normalizeWorkOrderFormValues(values);
   const missingFields: RequiredWorkOrderField[] = [];
@@ -296,6 +361,9 @@ function getMissingWorkOrderFields(
   }
   if (!normalizedValues.repairAction) {
     missingFields.push("repairAction");
+  }
+  if (type !== "cabinet" && evidence.length > 0 && !hasManualAngleFeedback) {
+    missingFields.push("manualAngle");
   }
 
   return missingFields;
@@ -310,10 +378,9 @@ function buildSubmitDialogState(
   const noEvidence = missingFields.includes("evidence");
   const noDiagnosis = missingFields.includes("diagnosis");
   const noRepairAction = missingFields.includes("repairAction");
-  const allFieldsMissing =
-    missingFields.length === Object.keys(REQUIRED_WORK_ORDER_FIELD_LABELS).length;
+  const noManualAngle = missingFields.includes("manualAngle");
 
-  if (noEvidence && noDiagnosis && noRepairAction && allFieldsMissing) {
+  if (noEvidence && noDiagnosis && noRepairAction) {
     return {
       open: true,
       title: "请先完成机器人取证",
@@ -329,6 +396,22 @@ function buildSubmitDialogState(
       title: "请先完成现场取证",
       message:
         "当前工单还没有机器人抓拍照片。请先执行抓拍，确认照片已回传到证据区后，再提交处理结果。",
+      tone: "warning",
+    };
+  }
+
+  if (noManualAngle) {
+    const remainingFieldLabels = missingFieldLabels.filter(
+      (label) => label !== REQUIRED_WORK_ORDER_FIELD_LABELS.manualAngle,
+    );
+
+    return {
+      open: true,
+      title: "请先完成姿态纠偏",
+      message:
+        remainingFieldLabels.length > 0
+          ? `当前支架工单已完成抓拍，但尚未执行姿态纠偏。请先下发一次手动向西或向东指令，并补全以下内容：${remainingFieldLabels.join("、")}。`
+          : "当前支架工单已完成抓拍，但尚未执行姿态纠偏。请先下发一次手动向西或向东指令，确认机器人已完成姿态调整后再提交处理结果。",
       tone: "warning",
     };
   }
@@ -700,6 +783,42 @@ function ReadonlyField({
   );
 }
 
+function parseMetricNumber(value?: string): number | null {
+  if (!value) {
+    return null;
+  }
+
+  const matched = value.match(/-?\d+(?:\.\d+)?/);
+  return matched ? Number(matched[0]) : null;
+}
+
+function validateManualAngleInput(value: string): { ok: true; deltaAngle?: number } | {
+  ok: false;
+  message: string;
+} {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return { ok: true };
+  }
+
+  if (!/^\d+$/.test(trimmed)) {
+    return {
+      ok: false,
+      message: "请输入 0 到 90 之间的整数角度；留空时将默认按 10° 执行。",
+    };
+  }
+
+  const deltaAngle = Number(trimmed);
+  if (deltaAngle < 0 || deltaAngle > 90) {
+    return {
+      ok: false,
+      message: "姿态调整角度超出范围，请输入 0 到 90 之间的整数。",
+    };
+  }
+
+  return { ok: true, deltaAngle };
+}
+
 export default function DeviceDetailClient({
   siteId,
   siteName,
@@ -712,6 +831,8 @@ export default function DeviceDetailClient({
     (nodeType === "cabinet" ? "储能电柜 E1" : "N1");
   const nodeId = searchParams.get("nodeId") || nodeLabel;
   const returnTo = searchParams.get("returnTo") || `/sites/${siteId}/2d`;
+  const actualAngleParam = searchParams.get("actualAngle");
+  const targetAngleParam = searchParams.get("targetAngle");
   const requestedHasWorkOrder =
     searchParams.get("hasWorkOrder") === "0" ? false : true;
   const seed = Number((nodeId ?? nodeLabel).match(/\d+/)?.[0] ?? "1");
@@ -730,13 +851,35 @@ export default function DeviceDetailClient({
   const [selectedHistoryOrder, setSelectedHistoryOrder] =
     useState<WorkOrderRecord | null>(null);
   const [workOrderHistory, setWorkOrderHistory] = useState<WorkOrderRecord[]>([]);
+  const [manualAngleInput, setManualAngleInput] = useState("");
+  const [manualAnglePending, setManualAnglePending] = useState(false);
+  const [manualAngleFeedback, setManualAngleFeedback] =
+    useState<ManualAngleFeedback | null>(null);
+  const [captureCooldownActive, setCaptureCooldownActive] = useState(false);
+  const captureCooldownTimerRef = useRef<number | null>(null);
   const hasWorkOrder = requestedHasWorkOrder && !resolvedWorkOrder;
   const [currentOrderStatus, setCurrentOrderStatus] = useState<WorkOrderStatus>(
     hasWorkOrder ? "pending" : "completed",
   );
+  const inspectionAngleSnapshot = useMemo<InspectionAngleSnapshot | null>(() => {
+    if (nodeType === "cabinet") {
+      return null;
+    }
+
+    const actualAngle = parseAngleSearchParam(actualAngleParam);
+    const targetAngle = parseAngleSearchParam(targetAngleParam);
+    if (actualAngle === null || targetAngle === null) {
+      return null;
+    }
+
+    return {
+      actualAngle,
+      targetAngle,
+    };
+  }, [actualAngleParam, nodeType, targetAngleParam]);
   const metrics = useMemo(
-    () => buildMetrics(nodeType, seed, hasWarning),
-    [nodeType, seed, hasWarning],
+    () => buildMetrics(nodeType, seed, hasWarning, inspectionAngleSnapshot),
+    [hasWarning, inspectionAngleSnapshot, nodeType, seed],
   );
   const currentOrderMeta = useMemo(() => buildCurrentWorkOrderMeta(seed), [seed]);
   const cameraViewerFramePath = useMemo(
@@ -755,12 +898,18 @@ export default function DeviceDetailClient({
     createEmptyWorkOrderForm,
   );
   const currentOrderPending = currentOrderStatus === "pending";
+  const manualAngleExecuted = manualAngleFeedback !== null;
   const missingRequiredFields = useMemo(
     () =>
       submitAttempted
-        ? getMissingWorkOrderFields(formValues, cameraEvidence)
+        ? getMissingWorkOrderFields(
+            formValues,
+            cameraEvidence,
+            nodeType,
+            manualAngleExecuted,
+          )
         : [],
-    [cameraEvidence, formValues, submitAttempted],
+    [cameraEvidence, formValues, manualAngleExecuted, nodeType, submitAttempted],
   );
   const missingRequiredFieldSet = useMemo(
     () => new Set<RequiredWorkOrderField>(missingRequiredFields),
@@ -785,7 +934,25 @@ export default function DeviceDetailClient({
     setDrawerOpen(false);
     setCurrentOrderStatus(currentHasWorkOrder ? "pending" : "completed");
     setWorkOrderHistory(buildMockWorkOrderHistory(nodeType, nodeLabel, seed));
+    setManualAngleInput("");
+    setManualAnglePending(false);
+    setManualAngleFeedback(null);
+    setCaptureCooldownActive(false);
+    if (captureCooldownTimerRef.current) {
+      window.clearTimeout(captureCooldownTimerRef.current);
+      captureCooldownTimerRef.current = null;
+    }
   }, [nodeId, nodeLabel, nodeType, requestedHasWorkOrder, seed, siteId]);
+
+  useEffect(
+    () => () => {
+      if (captureCooldownTimerRef.current) {
+        window.clearTimeout(captureCooldownTimerRef.current);
+        captureCooldownTimerRef.current = null;
+      }
+    },
+    [],
+  );
 
   const timeline = useMemo(
     () => buildTimeline(nodeType, hasWarning || currentOrderPending),
@@ -960,15 +1127,26 @@ export default function DeviceDetailClient({
   );
   const latestHistoryOrder = workOrderHistory[0] ?? null;
   const currentOrderStatusMeta = WORK_ORDER_STATUS_META[currentOrderStatus];
+  const isPhotovoltaicNode = nodeType !== "cabinet";
   const currentDiagnosisState = currentOrderPending
-    ? formValues.diagnosis
-      ? "诊断已生成，待提交"
-      : cameraEvidence.length > 0
-        ? "已抓拍，待填写处理结果"
-        : "等待机器人抓拍"
+    ? isPhotovoltaicNode
+      ? manualAngleExecuted
+        ? "姿态纠偏已执行，待提交"
+        : cameraEvidence.length > 0
+          ? "已抓拍，待执行姿态纠偏"
+          : "等待机器人抓拍"
+      : formValues.diagnosis
+        ? "诊断已生成，待提交"
+        : cameraEvidence.length > 0
+          ? "已抓拍，待填写处理结果"
+          : "等待机器人抓拍"
     : latestHistoryOrder
       ? "已归档至历史工单"
       : "当前无待处理工单";
+  const currentActualAngle =
+    manualAngleFeedback?.verifiedActualAngle ?? parseMetricNumber(metrics[0]?.value);
+  const captureActionDisabled =
+    capturePending || submitPending || manualAnglePending || captureCooldownActive;
   const currentOrderRecord = useMemo<WorkOrderRecord>(
     () => ({
       id: `current-${nodeId}`,
@@ -995,6 +1173,15 @@ export default function DeviceDetailClient({
     ],
   );
   const isHistoryDrawer = drawerMode === "history" && selectedHistoryOrder !== null;
+  const manualAngleActionDisabled =
+    !currentOrderPending ||
+    isHistoryDrawer ||
+    cameraEvidence.length === 0 ||
+    capturePending ||
+    submitPending ||
+    manualAnglePending;
+  const shouldShowPoseControlCard =
+    isPhotovoltaicNode && !isHistoryDrawer && cameraEvidence.length > 0;
   const activeDrawerRecord = isHistoryDrawer ? selectedHistoryOrder : currentOrderRecord;
   const activeDrawerStatusMeta =
     WORK_ORDER_STATUS_META[activeDrawerRecord?.status ?? "completed"];
@@ -1055,6 +1242,10 @@ export default function DeviceDetailClient({
   }
 
   async function handleCaptureSnapshot() {
+    if (captureActionDisabled) {
+      return;
+    }
+
     setCapturePending(true);
     setCaptureError("");
 
@@ -1096,13 +1287,95 @@ export default function DeviceDetailClient({
     }
   }
 
+  async function handleManualAngleAction(direction: ManualAngleDirection) {
+    if (manualAngleActionDisabled) {
+      return;
+    }
+
+    const validation = validateManualAngleInput(manualAngleInput);
+    if (!validation.ok) {
+      setSubmitDialogState({
+        open: true,
+        title: "姿态调整参数无效",
+        message: validation.message,
+        tone: "warning",
+      });
+      return;
+    }
+
+    setManualAnglePending(true);
+
+    try {
+      const response = await manualAngleControl({
+        requestId: crypto.randomUUID(),
+        siteId,
+        nodeId,
+        nodeLabel,
+        direction,
+        deltaAngle: validation.deltaAngle,
+      });
+
+      const actualAngleUsed =
+        typeof response.actualAngleUsed === "number"
+          ? response.actualAngleUsed
+          : currentActualAngle ?? 0;
+      const verifiedActualAngle =
+        typeof response.verifiedActualAngle === "number"
+          ? response.verifiedActualAngle
+          : actualAngleUsed;
+      const verifiedChanged = response.verifiedChanged ?? false;
+      const targetAngle =
+        typeof response.targetAngle === "number" ? response.targetAngle : 0;
+      const deltaAngleUsed =
+        typeof response.deltaAngleUsed === "number"
+          ? response.deltaAngleUsed
+          : validation.deltaAngle ?? 10;
+
+      setManualAngleFeedback({
+        direction,
+        actualAngleUsed,
+        verifiedActualAngle,
+        verifiedChanged,
+        targetAngle,
+        deltaAngleUsed,
+        message: response.message,
+      });
+      setCaptureCooldownActive(true);
+
+      if (captureCooldownTimerRef.current) {
+        window.clearTimeout(captureCooldownTimerRef.current);
+      }
+      captureCooldownTimerRef.current = window.setTimeout(() => {
+        setCaptureCooldownActive(false);
+        captureCooldownTimerRef.current = null;
+      }, 2500);
+    } catch (error) {
+      setSubmitDialogState({
+        open: true,
+        title: "姿态调整未执行",
+        message:
+          error instanceof Error
+            ? error.message
+            : "机器人未能完成姿态调整，请检查设备连接状态后重试。",
+        tone: "error",
+      });
+    } finally {
+      setManualAnglePending(false);
+    }
+  }
+
   async function handleSubmitWorkOrder() {
     if (!currentOrderPending || submitPending) {
       return;
     }
 
     setSubmitAttempted(true);
-    const missingFields = getMissingWorkOrderFields(formValues, cameraEvidence);
+    const missingFields = getMissingWorkOrderFields(
+      formValues,
+      cameraEvidence,
+      nodeType,
+      manualAngleExecuted,
+    );
     if (missingFields.length > 0) {
       setSubmitDialogState(buildSubmitDialogState(missingFields));
       return;
@@ -1137,6 +1410,11 @@ export default function DeviceDetailClient({
         nodeId,
         nodeLabel,
       });
+
+      const activePatrolSession = getPatrolSessionForSite(siteId);
+      if (matchesPatrolLockedDevice(activePatrolSession, siteId, nodeId)) {
+        clearPatrolSession(activePatrolSession?.requestId);
+      }
 
       await new Promise<void>((resolve) => {
         window.setTimeout(resolve, 3000);
@@ -1373,7 +1651,7 @@ export default function DeviceDetailClient({
                   </p>
                   <p className="mt-1 text-xs text-slate-500">
                     {currentOrderPending
-                      ? "点击继续处理可进入工单抽屉，抓拍与填写诊断结果。"
+                      ? "点击转处理工单可进入工单抽屉，抓拍与填写诊断结果。"
                       : latestHistoryOrder
                         ? `最近一次归档为 ${latestHistoryOrder.orderNo}，可在下方历史列表查看只读详情。`
                         : "当前设备暂无待处理工单。"}
@@ -1390,7 +1668,7 @@ export default function DeviceDetailClient({
                         : "cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400"
                     }`}
                   >
-                    {currentOrderPending ? "继续处理" : primaryActionLabel}
+                    {currentOrderPending ? "转处理工单" : primaryActionLabel}
                   </button>
                 </div>
               </div>
@@ -1533,7 +1811,11 @@ export default function DeviceDetailClient({
             <section className="rounded-xl border border-slate-200 bg-white p-4">
               <div className="flex items-center justify-between">
                 <p className="text-lg font-semibold text-slate-800">
-                  {isHistoryDrawer ? "机器人现场记录" : "机器人摄像头回传"}
+                  {isHistoryDrawer
+                    ? "机器人现场记录"
+                    : isPhotovoltaicNode
+                      ? "机器人现场取证"
+                      : "机器人摄像头回传"}
                 </p>
                 {isHistoryDrawer ? (
                   <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-semibold text-slate-600">
@@ -1599,76 +1881,216 @@ export default function DeviceDetailClient({
                   </div>
                 </div>
               ) : (
-                <div className="mt-3 grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_162px]">
-                  <div className="rounded-xl border border-slate-200 bg-slate-950 p-2 shadow-inner">
-                    <div className="relative flex h-[210px] items-center justify-center overflow-hidden rounded-lg border border-slate-700/70 bg-[radial-gradient(circle_at_30%_20%,rgba(56,189,248,0.24),rgba(2,6,23,0.95))]">
-                      <div className="absolute top-2 left-2 rounded bg-slate-900/75 px-2 py-0.5 text-[10px] font-medium text-slate-100">
-                        ROBOT-CAM-01
-                      </div>
-                      <div className="absolute top-2 right-2 rounded bg-slate-900/75 px-2 py-0.5 text-[10px] font-medium text-slate-100">
-                        MJPEG · /camera_driver/image_raw
-                      </div>
-                      {drawerOpen && cameraVideoBaseUrl ? (
-                        <iframe
-                          key={`${nodeId}-${cameraViewerFramePath}`}
-                          src={cameraViewerFramePath}
-                          title={`${nodeLabel} 机器人实时画面`}
-                          className="block h-full w-full border-0 bg-slate-950"
-                          loading="eager"
-                          scrolling="no"
-                        />
-                      ) : (
-                        <div className="px-6 text-center text-sm font-medium text-sky-100">
-                          {cameraVideoBaseUrl
-                            ? "打开抽屉后将建立机器人实时视频连接。"
-                            : "未配置机器人实时视频流地址，请检查 `NEXT_PUBLIC_ROBOT_VIDEO_BASE_URL` 或 `NEXT_PUBLIC_ROBOT_BASE_URL`。"}
+                isPhotovoltaicNode ? (
+                  <div className="mt-3 space-y-4">
+                    <div className="rounded-2xl border border-sky-100 bg-gradient-to-br from-white via-sky-50/70 to-cyan-50/45 p-4 shadow-[0_14px_28px_rgba(14,116,144,0.08)]">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-800">机器人现场取证</p>
+                          <p className="mt-1 text-xs leading-5 text-slate-500">
+                            先完成机器人抓拍，系统将自动生成“角度偏差影响发电效率”的诊断结论，并在下方故障诊断区解锁姿态纠偏操作。
+                          </p>
                         </div>
-                      )}
-                      <div className="absolute bottom-2 left-2 rounded bg-slate-900/75 px-2 py-0.5 text-[10px] text-slate-200">
-                        {siteName} / {nodeLabel}
+                        <div className="flex flex-wrap gap-2">
+                          <span
+                            className={`rounded-full border px-2 py-1 text-[11px] font-semibold ${
+                              cameraEvidence.length > 0
+                                ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                : "border-sky-200 bg-white text-sky-700"
+                            }`}
+                          >
+                            {cameraEvidence.length > 0 ? "已抓拍" : "待抓拍"}
+                          </span>
+                          <span
+                            className={`rounded-full border px-2 py-1 text-[11px] font-semibold ${
+                              cameraVideoBaseUrl
+                                ? "border-cyan-200 bg-cyan-50 text-cyan-700"
+                                : "border-slate-200 bg-slate-100 text-slate-500"
+                            }`}
+                          >
+                            {cameraVideoBaseUrl ? "实时流中" : "未配置"}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        {[
+                          {
+                            key: "capture",
+                            label: "1 现场抓拍",
+                            active: cameraEvidence.length === 0,
+                            done: cameraEvidence.length > 0,
+                          },
+                          {
+                            key: "adjust",
+                            label: "2 姿态纠偏",
+                            active: cameraEvidence.length > 0 && !manualAngleExecuted,
+                            done: manualAngleExecuted,
+                          },
+                          {
+                            key: "submit",
+                            label: "3 提交归档",
+                            active: manualAngleExecuted && currentOrderPending,
+                            done: !currentOrderPending,
+                          },
+                        ].map((step) => (
+                          <span
+                            key={step.key}
+                            className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors ${
+                              step.done
+                                ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                : step.active
+                                  ? "border-sky-200 bg-white text-sky-700"
+                                  : "border-slate-200 bg-slate-100 text-slate-500"
+                            }`}
+                          >
+                            {step.label}
+                          </span>
+                        ))}
+                      </div>
+
+                      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-950 p-2 shadow-inner">
+                        <div className="relative flex h-[210px] items-center justify-center overflow-hidden rounded-lg border border-slate-700/70 bg-[radial-gradient(circle_at_30%_20%,rgba(56,189,248,0.24),rgba(2,6,23,0.95))]">
+                          <div className="absolute top-2 left-2 rounded bg-slate-900/75 px-2 py-0.5 text-[10px] font-medium text-slate-100">
+                            ROBOT-CAM-01
+                          </div>
+                          <div className="absolute top-2 right-2 rounded bg-slate-900/75 px-2 py-0.5 text-[10px] font-medium text-slate-100">
+                            MJPEG · /camera_driver/image_raw
+                          </div>
+                          {drawerOpen && cameraVideoBaseUrl ? (
+                            <iframe
+                              key={`${nodeId}-${cameraViewerFramePath}`}
+                              src={cameraViewerFramePath}
+                              title={`${nodeLabel} 机器人实时画面`}
+                              className="block h-full w-full border-0 bg-slate-950"
+                              loading="eager"
+                              scrolling="no"
+                            />
+                          ) : (
+                            <div className="px-6 text-center text-sm font-medium text-sky-100">
+                              {cameraVideoBaseUrl
+                                ? "打开抽屉后将建立机器人实时视频连接。"
+                                : "未配置机器人实时视频流地址，请检查 `NEXT_PUBLIC_ROBOT_VIDEO_BASE_URL` 或 `NEXT_PUBLIC_ROBOT_BASE_URL`。"}
+                            </div>
+                          )}
+                          <div className="absolute bottom-2 left-2 rounded bg-slate-900/75 px-2 py-0.5 text-[10px] text-slate-200">
+                            {siteName} / {nodeLabel}
+                          </div>
+                        </div>
+                        <div className="mt-2 flex items-center justify-between gap-2">
+                          <div className="text-[11px] text-slate-300">
+                            {captureError
+                              ? `抓拍异常：${captureError}`
+                              : captureCooldownActive
+                                ? "姿态调整指令已下发，等待支架稳定后再抓拍。"
+                                : cameraEvidence.length > 0
+                                  ? "抓拍结果已写入证据区，并自动生成姿态偏差诊断。"
+                                  : `实时流地址：${cameraVideoBaseUrl || "未配置"}${cameraVideoBaseUrl ? "/stream?topic=/camera_driver/image_raw" : ""}`}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={handleCaptureSnapshot}
+                              disabled={captureActionDisabled}
+                              className={`rounded-md border px-2.5 py-1 text-xs font-semibold ${
+                                captureActionDisabled
+                                  ? "cursor-wait border-slate-700 bg-slate-700 text-slate-300"
+                                  : "border-slate-600 bg-slate-800 text-slate-100 hover:bg-slate-700"
+                              }`}
+                            >
+                              {capturePending
+                                ? "抓拍中..."
+                                : manualAnglePending
+                                  ? "调整中..."
+                                  : submitPending
+                                    ? "处理中..."
+                                    : captureCooldownActive
+                                      ? "等待姿态稳定..."
+                                      : cameraEvidence.length > 0
+                                        ? "重新抓拍"
+                                        : "抓拍"}
+                            </button>
+                          </div>
+                        </div>
                       </div>
                     </div>
-                    <div className="mt-2 flex items-center justify-between gap-2">
-                      <div className="text-[11px] text-slate-300">
-                        {captureError
-                          ? `抓拍异常：${captureError}`
-                          : `实时流地址：${cameraVideoBaseUrl || "未配置"}${cameraVideoBaseUrl ? "/stream?topic=/camera_driver/image_raw" : ""}`}
+                  </div>
+                ) : (
+                  <div className="mt-3 grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_162px]">
+                    <div className="rounded-xl border border-slate-200 bg-slate-950 p-2 shadow-inner">
+                      <div className="relative flex h-[210px] items-center justify-center overflow-hidden rounded-lg border border-slate-700/70 bg-[radial-gradient(circle_at_30%_20%,rgba(56,189,248,0.24),rgba(2,6,23,0.95))]">
+                        <div className="absolute top-2 left-2 rounded bg-slate-900/75 px-2 py-0.5 text-[10px] font-medium text-slate-100">
+                          ROBOT-CAM-01
+                        </div>
+                        <div className="absolute top-2 right-2 rounded bg-slate-900/75 px-2 py-0.5 text-[10px] font-medium text-slate-100">
+                          MJPEG · /camera_driver/image_raw
+                        </div>
+                        {drawerOpen && cameraVideoBaseUrl ? (
+                          <iframe
+                            key={`${nodeId}-${cameraViewerFramePath}`}
+                            src={cameraViewerFramePath}
+                            title={`${nodeLabel} 机器人实时画面`}
+                            className="block h-full w-full border-0 bg-slate-950"
+                            loading="eager"
+                            scrolling="no"
+                          />
+                        ) : (
+                          <div className="px-6 text-center text-sm font-medium text-sky-100">
+                            {cameraVideoBaseUrl
+                              ? "打开抽屉后将建立机器人实时视频连接。"
+                              : "未配置机器人实时视频流地址，请检查 `NEXT_PUBLIC_ROBOT_VIDEO_BASE_URL` 或 `NEXT_PUBLIC_ROBOT_BASE_URL`。"}
+                          </div>
+                        )}
+                        <div className="absolute bottom-2 left-2 rounded bg-slate-900/75 px-2 py-0.5 text-[10px] text-slate-200">
+                          {siteName} / {nodeLabel}
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={handleCaptureSnapshot}
-                          disabled={capturePending || submitPending}
-                          className={`rounded-md border px-2.5 py-1 text-xs font-semibold ${
-                            capturePending || submitPending
-                              ? "cursor-wait border-slate-700 bg-slate-700 text-slate-300"
-                              : "border-slate-600 bg-slate-800 text-slate-100 hover:bg-slate-700"
-                          }`}
+                      <div className="mt-2 flex items-center justify-between gap-2">
+                        <div className="text-[11px] text-slate-300">
+                          {captureError
+                            ? `抓拍异常：${captureError}`
+                            : `实时流地址：${cameraVideoBaseUrl || "未配置"}${cameraVideoBaseUrl ? "/stream?topic=/camera_driver/image_raw" : ""}`}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={handleCaptureSnapshot}
+                            disabled={capturePending || submitPending}
+                            className={`rounded-md border px-2.5 py-1 text-xs font-semibold ${
+                              capturePending || submitPending
+                                ? "cursor-wait border-slate-700 bg-slate-700 text-slate-300"
+                                : "border-slate-600 bg-slate-800 text-slate-100 hover:bg-slate-700"
+                            }`}
+                          >
+                            {capturePending
+                              ? "抓拍中..."
+                              : submitPending
+                                ? "处理中..."
+                                : "抓拍"}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      {regionPreviews.map((preview) => (
+                        <div
+                          key={preview.title}
+                          className="rounded-lg border border-slate-200 bg-slate-50 p-2"
                         >
-                          {capturePending ? "抓拍中..." : submitPending ? "处理中..." : "抓拍"}
-                        </button>
-                      </div>
+                          <RegionPreviewCanvas
+                            title={preview.title}
+                            description={preview.description}
+                            variant={preview.variant}
+                          />
+                          <p className="mt-1 text-[10px] font-semibold text-slate-700">
+                            模拟区域图
+                          </p>
+                          <p className="text-[10px] text-slate-500">{preview.title}</p>
+                        </div>
+                      ))}
                     </div>
                   </div>
-                  <div className="space-y-2">
-                    {regionPreviews.map((preview) => (
-                      <div
-                        key={preview.title}
-                        className="rounded-lg border border-slate-200 bg-slate-50 p-2"
-                      >
-                        <RegionPreviewCanvas
-                          title={preview.title}
-                          description={preview.description}
-                          variant={preview.variant}
-                        />
-                        <p className="mt-1 text-[10px] font-semibold text-slate-700">
-                          模拟区域图
-                        </p>
-                        <p className="text-[10px] text-slate-500">{preview.title}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+                )
               )}
             </section>
 
@@ -1697,6 +2119,93 @@ export default function DeviceDetailClient({
                 </>
               ) : (
                 <>
+                  {shouldShowPoseControlCard ? (
+                    <div
+                      className={`mb-4 rounded-2xl border p-4 ${
+                        missingRequiredFieldSet.has("manualAngle")
+                          ? "border-rose-200 bg-rose-50/70"
+                          : manualAngleExecuted
+                            ? "border-emerald-200 bg-emerald-50/70"
+                            : "border-sky-100 bg-gradient-to-br from-white via-sky-50/70 to-cyan-50/35"
+                      }`}
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-800">姿态纠偏建议</p>
+                          <p className="mt-1 text-xs leading-5 text-slate-500">
+                            抓拍结果显示该支架存在角度偏差，已影响发电效率。请先执行一次姿态纠偏，再提交处理结果。
+                          </p>
+                        </div>
+                        <span
+                          className={`rounded-full border px-2 py-1 text-[11px] font-semibold ${
+                            manualAngleExecuted
+                              ? "border-emerald-200 bg-white text-emerald-700"
+                              : missingRequiredFieldSet.has("manualAngle")
+                                ? "border-rose-200 bg-white text-rose-700"
+                                : "border-sky-200 bg-white text-sky-700"
+                          }`}
+                        >
+                          {manualAngleExecuted ? "已执行" : "待执行"}
+                        </span>
+                      </div>
+
+                      <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,180px)_repeat(2,minmax(0,1fr))]">
+                        <label className="space-y-1">
+                          <span className="text-xs font-semibold text-slate-600">
+                            调整角度
+                          </span>
+                          <input
+                            value={manualAngleInput}
+                            onChange={(event) => setManualAngleInput(event.target.value)}
+                            inputMode="numeric"
+                            placeholder="默认 10°"
+                            className="h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-sky-500"
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => handleManualAngleAction("west")}
+                          disabled={manualAngleActionDisabled}
+                          className={`rounded-xl px-4 py-3 text-sm font-semibold transition ${
+                            manualAngleActionDisabled
+                              ? "cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400"
+                              : "border border-sky-200 bg-sky-600 text-white shadow-[0_10px_22px_rgba(2,132,199,0.26)] hover:bg-sky-700"
+                          }`}
+                        >
+                          {manualAnglePending ? "计算中..." : "手动向西"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleManualAngleAction("east")}
+                          disabled={manualAngleActionDisabled}
+                          className={`rounded-xl px-4 py-3 text-sm font-semibold transition ${
+                            manualAngleActionDisabled
+                              ? "cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400"
+                              : "border border-cyan-200 bg-white text-cyan-700 shadow-[0_10px_22px_rgba(14,116,144,0.14)] hover:bg-cyan-50"
+                          }`}
+                        >
+                          {manualAnglePending ? "计算中..." : "手动向东"}
+                        </button>
+                      </div>
+
+                      <p
+                        className={`mt-3 text-[11px] leading-5 ${
+                          manualAngleExecuted
+                            ? "text-emerald-700"
+                            : missingRequiredFieldSet.has("manualAngle")
+                              ? "text-rose-600"
+                              : "text-slate-500"
+                        }`}
+                      >
+                        {manualAngleExecuted
+                          ? manualAngleFeedback?.message
+                          : missingRequiredFieldSet.has("manualAngle")
+                            ? "提交前请至少执行一次手动向西或向东指令，系统才允许归档当前支架工单。"
+                            : "输入为空时默认按 10° 执行。仅支持 0 到 90 之间的整数。"}
+                      </p>
+                    </div>
+                  ) : null}
+
                   <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <label className="space-y-1">
                       <span className="text-xs font-semibold text-slate-600">
