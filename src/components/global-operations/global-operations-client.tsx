@@ -136,10 +136,6 @@ export function GlobalOperationsClient({
   }, [router]);
 
   useEffect(() => {
-    if (patrolStage === "idle") {
-      return;
-    }
-
     let closedDueToError = false;
 
     const applyPatrolEvent = (event: RobotInspectionEvent) => {
@@ -208,7 +204,7 @@ export function GlobalOperationsClient({
     return () => {
       eventSource.close();
     };
-  }, [patrolStage]);
+  }, []);
 
   useEffect(() => {
     const socket = new WebSocket("ws://10.180.40.165:8801/ws/plant-created");

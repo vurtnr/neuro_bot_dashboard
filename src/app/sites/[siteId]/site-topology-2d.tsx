@@ -41,6 +41,19 @@ type CabinetMetrics = {
   voltage: number;
 };
 
+type InverterCsvPoint = {
+  timeLabel: string;
+  sortKey: string;
+  eday: number | null;
+  pac: number | null;
+  etotal: number | null;
+};
+
+type InverterCsvSeries = {
+  source: string;
+  points: InverterCsvPoint[];
+};
+
 type TopologyNodeData = {
   label: string;
   subtitle?: string;
@@ -183,6 +196,71 @@ function seededShuffle<T>(list: T[], seed = 20260309): T[] {
     [result[i], result[j]] = [result[j], result[i]];
   }
   return result;
+}
+
+function parseNullableCsvNumber(value: string | undefined): number | null {
+  if (!value || value === "\\N") {
+    return null;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatTimeLabel(timestamp: string | undefined): string | null {
+  if (!timestamp) {
+    return null;
+  }
+
+  const [, timePart] = timestamp.trim().split(" ");
+  if (!timePart) {
+    return null;
+  }
+
+  return timePart.slice(0, 5);
+}
+
+function parseInverterCsv(text: string, source: string): InverterCsvSeries {
+  const [headerLine, ...rawLines] = text.trim().split(/\r?\n/);
+  const headers = headerLine.replace(/^\uFEFF/, "").split(",");
+  const indexMap = new Map(headers.map((header, index) => [header, index]));
+
+  const createtimeIndex = indexMap.get("createtime");
+  const edayIndex = indexMap.get("eday");
+  const pacIndex = indexMap.get("pac");
+  const etotalIndex = indexMap.get("etotal");
+
+  if (
+    createtimeIndex === undefined ||
+    edayIndex === undefined ||
+    pacIndex === undefined ||
+    etotalIndex === undefined
+  ) {
+    throw new Error(`CSV ${source} is missing required inverter fields`);
+  }
+
+  const points = rawLines
+    .filter((line) => line.trim().length > 0)
+    .map((line) => line.split(","))
+    .map((columns) => {
+      const sortKey = columns[createtimeIndex]?.trim() ?? "";
+      const timeLabel = formatTimeLabel(sortKey);
+      if (!timeLabel) {
+        return null;
+      }
+
+      return {
+        timeLabel,
+        sortKey,
+        eday: parseNullableCsvNumber(columns[edayIndex]),
+        pac: parseNullableCsvNumber(columns[pacIndex]),
+        etotal: parseNullableCsvNumber(columns[etotalIndex]),
+      } satisfies InverterCsvPoint;
+    })
+    .filter((point): point is InverterCsvPoint => point !== null)
+    .sort((left, right) => left.sortKey.localeCompare(right.sortKey));
+
+  return { source, points };
 }
 
 function createPvStatusPool(total: number): DeviceStatus[] {
@@ -683,6 +761,8 @@ export default function SiteTopology2D({
     stopPatrol,
     dismissPatrolError,
   } = useRobotPatrol(siteId);
+  const [inverterSeries, setInverterSeries] = useState<InverterCsvSeries[]>([]);
+  const [inverterSeriesError, setInverterSeriesError] = useState<string | null>(null);
   const [topologyView, setTopologyView] = useState<"2d" | "3d">("2d");
   const [isTopologyFullscreen, setIsTopologyFullscreen] = useState(false);
   const [ncuPanelOpen, setNcuPanelOpen] = useState(true);
@@ -742,6 +822,52 @@ export default function SiteTopology2D({
       })),
     [activeReviewNodeId, baseCabinetRuntimeData, resolvedWorkOrderNodeIdSet],
   );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadInverterSeries = async () => {
+      try {
+        const [inverter1Response, inverter2Response] = await Promise.all([
+          fetch("/inverter1.csv"),
+          fetch("/inverter2.csv"),
+        ]);
+
+        if (!inverter1Response.ok || !inverter2Response.ok) {
+          throw new Error("failed_to_load_inverter_csv");
+        }
+
+        const [inverter1Text, inverter2Text] = await Promise.all([
+          inverter1Response.text(),
+          inverter2Response.text(),
+        ]);
+
+        if (cancelled) {
+          return;
+        }
+
+        setInverterSeries([
+          parseInverterCsv(inverter1Text, "逆变器 1"),
+          parseInverterCsv(inverter2Text, "逆变器 2"),
+        ]);
+        setInverterSeriesError(null);
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+
+        console.error("[site-2d] failed to load inverter csv data", error);
+        setInverterSeries([]);
+        setInverterSeriesError("逆变器发电数据加载失败");
+      }
+    };
+
+    void loadInverterSeries();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const syncResolvedWorkOrders = () => {
@@ -1146,38 +1272,175 @@ export default function SiteTopology2D({
         } as Highcharts.Options,
       },
       {
-        title: "实时告警流水",
+        title: "逆变器发电轨迹",
         options: {
           chart: {
             type: "areaspline",
-            height: 220,
+            height: 260,
             backgroundColor: "transparent",
-            spacing: [8, 8, 8, 8],
+            spacing: [12, 8, 8, 8],
           },
           title: { text: undefined },
           credits: { enabled: false },
-          legend: { enabled: false },
-          xAxis: {
-            categories: ["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00"],
-            labels: {
-              style: { color: isDay ? "#475569" : "#9a3412", fontSize: "10px" },
+          legend: {
+            enabled: true,
+            itemStyle: {
+              color: isDay ? "#334155" : "#7c2d12",
+              fontSize: "10px",
+              fontWeight: "500",
             },
           },
-          yAxis: {
-            title: { text: undefined },
+          xAxis: {
+            categories: Array.from(
+              new Map(
+                inverterSeries
+                  .flatMap((series) =>
+                    series.points.map((point) => [point.timeLabel, point.sortKey] as const),
+                  )
+                  .sort((left, right) => left[1].localeCompare(right[1])),
+              ).keys(),
+            ),
+            tickLength: 0,
+            lineColor: isDay ? "rgba(148,163,184,0.35)" : "rgba(251,146,60,0.32)",
             labels: {
               style: { color: isDay ? "#64748b" : "#9a3412", fontSize: "10px" },
             },
+            plotBands: [
+              {
+                color: isDay ? "rgba(191,219,254,0.22)" : "rgba(254,215,170,0.24)",
+                from: 3,
+                to: 7,
+              },
+            ],
           },
-          tooltip: { valueSuffix: " 条" },
-          series: [
+          yAxis: [
             {
-              type: "areaspline",
-              data: dashboardData.hasWarning ? [1, 2, 3, 5, 4, 3, 2, 2] : [0, 1, 1, 2, 1, 1, 0, 1],
-              color: isDay ? "#ef4444" : "#f97316",
+              title: {
+                text: "输出功率",
+                style: { color: isDay ? "#2563eb" : "#ea580c", fontSize: "10px" },
+              },
+              min: 0,
+              gridLineColor: isDay ? "rgba(100,116,139,0.14)" : "rgba(217,119,6,0.16)",
+              labels: {
+                style: { color: isDay ? "#64748b" : "#9a3412", fontSize: "10px" },
+              },
+            },
+            {
+              title: {
+                text: "发电量",
+                style: { color: isDay ? "#65a30d" : "#d97706", fontSize: "10px" },
+              },
+              min: 0,
+              opposite: true,
+              gridLineWidth: 0,
+              labels: {
+                style: { color: isDay ? "#64748b" : "#9a3412", fontSize: "10px" },
+              },
             },
           ],
-          plotOptions: { areaspline: { marker: { enabled: false }, fillOpacity: 0.22 } },
+          tooltip: {
+            shared: true,
+            backgroundColor: isDay
+              ? "rgba(255,255,255,0.96)"
+              : "rgba(255,247,237,0.96)",
+            borderColor: isDay ? "rgba(59,130,246,0.28)" : "rgba(249,115,22,0.28)",
+            shadow: false,
+          },
+          series: (() => {
+            const orderedTimeLabels = Array.from(
+              new Map(
+                inverterSeries
+                  .flatMap((series) =>
+                    series.points.map((point) => [point.timeLabel, point.sortKey] as const),
+                  )
+                  .sort((left, right) => left[1].localeCompare(right[1])),
+              ).keys(),
+            );
+            const pointMapBySeries = inverterSeries.map((series) => {
+              const map = new Map(series.points.map((point) => [point.timeLabel, point] as const));
+              return { source: series.source, map };
+            });
+            const pacColors = isDay
+              ? ["rgba(59,130,246,0.82)", "rgba(96,165,250,0.56)"]
+              : ["rgba(249,115,22,0.82)", "rgba(251,146,60,0.56)"];
+            const energyColors = isDay
+              ? ["rgba(190,242,100,0.78)", "rgba(132,204,22,0.42)"]
+              : ["rgba(253,224,71,0.78)", "rgba(250,204,21,0.42)"];
+
+            return pointMapBySeries.flatMap(({ source, map }, seriesIndex) => {
+              const pacData = orderedTimeLabels.map((label) => map.get(label)?.pac ?? null);
+              const edayData = orderedTimeLabels.map((label) => map.get(label)?.eday ?? null);
+              const etotalData = orderedTimeLabels.map((label) => map.get(label)?.etotal ?? null);
+
+              return [
+                {
+                  type: "areaspline",
+                  name: `${source} 输出功率`,
+                  data: pacData,
+                  yAxis: 0,
+                  color: pacColors[seriesIndex] ?? pacColors[0],
+                  fillOpacity: seriesIndex === 0 ? 0.28 : 0.18,
+                  lineWidth: 2.2,
+                  marker: {
+                    enabled: true,
+                    radius: 2.2,
+                    symbol: "circle",
+                  },
+                  zIndex: seriesIndex === 0 ? 3 : 2,
+                },
+                {
+                  type: "areaspline",
+                  name: `${source} 今日发电量`,
+                  data: edayData,
+                  yAxis: 1,
+                  color: energyColors[seriesIndex] ?? energyColors[0],
+                  fillOpacity: seriesIndex === 0 ? 0.2 : 0.12,
+                  lineWidth: 1.8,
+                  marker: {
+                    enabled: false,
+                  },
+                  zIndex: 1,
+                },
+                {
+                  type: "line",
+                  name: `${source} 总发电量`,
+                  data: etotalData,
+                  yAxis: 1,
+                  color: seriesIndex === 0
+                    ? (isDay ? "rgba(101,163,13,0.95)" : "rgba(202,138,4,0.95)")
+                    : (isDay ? "rgba(132,204,22,0.75)" : "rgba(234,179,8,0.75)"),
+                  dashStyle: seriesIndex === 0 ? "Solid" : "ShortDash",
+                  lineWidth: 1.6,
+                  marker: {
+                    enabled: false,
+                  },
+                  zIndex: 4,
+                },
+              ] satisfies Highcharts.SeriesOptionsType[];
+            });
+          })(),
+          plotOptions: {
+            series: {
+              animation: false,
+              states: {
+                hover: {
+                  lineWidthPlus: 0,
+                },
+              },
+            },
+            areaspline: {
+              threshold: null,
+            },
+          },
+          subtitle: inverterSeriesError
+            ? {
+                text: inverterSeriesError,
+                style: {
+                  color: isDay ? "#dc2626" : "#f97316",
+                  fontSize: "11px",
+                },
+              }
+            : undefined,
         } as Highcharts.Options,
       },
       {
@@ -1216,7 +1479,16 @@ export default function SiteTopology2D({
         } as Highcharts.Options,
       },
     ],
-    [batteryClusterOnlineRate, dashboardData.hasWarning, inverterOnlineRate, isDay, workOrderData.closed, workOrderData.pending, workOrderData.processing],
+    [
+      batteryClusterOnlineRate,
+      inverterOnlineRate,
+      inverterSeries,
+      inverterSeriesError,
+      isDay,
+      workOrderData.closed,
+      workOrderData.pending,
+      workOrderData.processing,
+    ],
   );
 
   const { nodes, edges } = useMemo(() => {
