@@ -8,9 +8,7 @@ type RobotPatrolLockCardProps = {
   message: string;
   error: string;
   scanPending?: boolean;
-  stopPending?: boolean;
   onConnect: () => void;
-  onStop: () => void;
 };
 
 type InfoRowProps = {
@@ -33,9 +31,7 @@ export default function RobotPatrolLockCard({
   message,
   error,
   scanPending = false,
-  stopPending = false,
   onConnect,
-  onStop,
 }: RobotPatrolLockCardProps) {
   if (!open || !device) {
     return null;
@@ -80,26 +76,14 @@ export default function RobotPatrolLockCard({
         <button
           type="button"
           onClick={onConnect}
-          disabled={scanPending || stopPending}
+          disabled={scanPending}
           className={`flex-1 rounded-2xl px-4 py-3 text-sm font-semibold transition ${
-            scanPending || stopPending
+            scanPending
               ? "cursor-not-allowed bg-slate-100 text-slate-400"
               : "bg-slate-900 text-white shadow-[0_12px_24px_rgba(15,23,42,0.18)] hover:bg-slate-800"
           }`}
         >
           {scanPending ? "扫码连接中..." : "扫码连接"}
-        </button>
-        <button
-          type="button"
-          onClick={onStop}
-          disabled={stopPending}
-          className={`rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
-            stopPending
-              ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400"
-              : "border-sky-200 bg-sky-50 text-sky-700 hover:border-sky-300 hover:bg-sky-100"
-          }`}
-        >
-          {stopPending ? "结束中..." : "结束巡检"}
         </button>
       </div>
     </div>

@@ -5,7 +5,7 @@ import { GlobalOperationsClient } from "@/components/global-operations/global-op
 import { globalSitePoints } from "./data";
 
 export const metadata: Metadata = {
-  title: "全球运维总览 - 全球指挥中心",
+  title: "全球运营总览 - 全球指挥中心",
   description: "登录后的全球场站运行总览页面",
 };
 

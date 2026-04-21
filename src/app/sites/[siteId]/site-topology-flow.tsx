@@ -45,6 +45,7 @@ import {
   UnrealBloomPass,
 } from "three-stdlib";
 import { generateMinuteLevelData } from "@/utils";
+import { buildOrderedTimeLabels } from "@/utils/inverter-series";
 
 const MODEL2_MATRIX = {
   rows: 3,
@@ -2111,13 +2112,7 @@ export default function SiteTopologyFlow({
     [batteryClusterOnlineRate, inverterOnlineRate, isDay],
   );
   const bottomAlarmOptions = useMemo<Highcharts.Options>(() => {
-    const orderedTimeLabels = Array.from(
-      new Map(
-        inverterSeries
-          .flatMap((series) => series.points.map((point) => [point.timeLabel, point.sortKey]))
-          .sort((left, right) => left[1].localeCompare(right[1])),
-      ).keys(),
-    );
+    const orderedTimeLabels = buildOrderedTimeLabels(inverterSeries);
 
     const timeIndex = new Map(
       orderedTimeLabels.map((label, index) => [label, index] as const),

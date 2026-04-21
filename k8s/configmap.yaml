@@ -5,4 +5,5 @@ metadata:
 data:
   NEXT_PUBLIC_ROBOT_BASE_URL: "https://robot-api.example.com"
   NEXT_PUBLIC_ROBOT_VIDEO_BASE_URL: "https://robot-video.example.com"
+  NEXT_PUBLIC_PLANT_CREATED_WS_URL: "ws://10.180.40.165:8801/ws/plant-created"
   NEXT_PUBLIC_TIANDITU_KEY: "c0cf6d9f223c83540c8b52d1faaf7bae"

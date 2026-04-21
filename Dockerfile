@@ -23,8 +23,11 @@ RUN addgroup -S nodejs && adduser -S nextjs -G nodejs
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/docker/entrypoint.sh ./entrypoint.sh
+RUN chmod +x ./entrypoint.sh
+RUN chown -R nextjs:nodejs /app
 
 USER nextjs
 EXPOSE 80
 
-CMD ["node", "server.js"]
+ENTRYPOINT ["./entrypoint.sh"]

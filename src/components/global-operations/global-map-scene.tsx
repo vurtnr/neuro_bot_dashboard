@@ -15,9 +15,19 @@ import {
   type GlobalSiteDetail,
   type GlobalSitePoint,
 } from "@/app/global-operations/data";
+import {
+  type PlannedPlant,
+  toPlannedPlantFeatureCollection,
+} from "@/components/global-operations/planned-plant";
+import {
+  resolveAnchoredPopupLayout,
+  type PopupLayout,
+} from "@/components/global-operations/planned-plant-popup-layout";
+import { PlannedPlantPopup } from "@/components/global-operations/planned-plant-popup";
 
 type GlobalMapSceneProps = {
   points: GlobalSitePoint[];
+  plannedPlants?: PlannedPlant[];
   anomalySiteId?: string | null;
   inspectionBusy?: boolean;
   onStartInspection?: (site: GlobalSitePoint) => void;
@@ -27,12 +37,6 @@ type GlobalMapSceneProps = {
 
 type MapStatus = "loading" | "ready" | "failed";
 type ViewMode = "globe" | "mercator";
-type PopupPlacement = "top" | "bottom";
-type PopupLayout = {
-  left: number;
-  top: number;
-  placement: PopupPlacement;
-};
 
 type SiteIndicatorLayout = {
   left: number;
@@ -64,6 +68,9 @@ const SITE_SOURCE_ID = "global-sites";
 const SITE_HALO_LAYER_ID = "global-sites-halo";
 const SITE_RING_LAYER_ID = "global-sites-ring";
 const SITE_CORE_LAYER_ID = "global-sites-core";
+const PLANNED_SOURCE_ID = "planned-plants";
+const PLANNED_HALO_LAYER_ID = "planned-plants-halo";
+const PLANNED_CORE_LAYER_ID = "planned-plants-core";
 
 const DEFAULT_GLOBE_CENTER: [number, number] = [13.15, 4.18];
 const DEFAULT_GLOBE_ZOOM = 1.02;
@@ -514,6 +521,72 @@ function ensureSiteSourceAndLayers(
   }
 }
 
+function ensurePlannedPlantSourceAndLayers(
+  map: MapLibreMap,
+  featureCollection: ReturnType<typeof toPlannedPlantFeatureCollection>,
+) {
+  const existingSource = map.getSource(PLANNED_SOURCE_ID) as GeoJSONSource | undefined;
+
+  if (!existingSource) {
+    map.addSource(PLANNED_SOURCE_ID, {
+      type: "geojson",
+      data: featureCollection,
+    });
+  } else {
+    existingSource.setData(featureCollection);
+  }
+
+  if (!map.getLayer(PLANNED_HALO_LAYER_ID)) {
+    map.addLayer({
+      id: PLANNED_HALO_LAYER_ID,
+      type: "circle",
+      source: PLANNED_SOURCE_ID,
+      paint: {
+        "circle-radius": [
+          "interpolate",
+          ["linear"],
+          ["zoom"],
+          0,
+          14,
+          3,
+          20,
+          5,
+          26,
+        ],
+        "circle-color": "#22c55e",
+        "circle-opacity": 0.18,
+        "circle-stroke-width": 0,
+        "circle-blur": 0.1,
+      },
+    });
+  }
+
+  if (!map.getLayer(PLANNED_CORE_LAYER_ID)) {
+    map.addLayer({
+      id: PLANNED_CORE_LAYER_ID,
+      type: "circle",
+      source: PLANNED_SOURCE_ID,
+      paint: {
+        "circle-radius": [
+          "interpolate",
+          ["linear"],
+          ["zoom"],
+          0,
+          4.4,
+          3,
+          5.4,
+          5,
+          6.4,
+        ],
+        "circle-color": "#16a34a",
+        "circle-stroke-color": "rgba(255,255,255,0.96)",
+        "circle-stroke-width": 2.2,
+        "circle-opacity": 1,
+      },
+    });
+  }
+}
+
 function applyMercatorViewport(map: MapLibreMap, points: GlobalSitePoint[]) {
   const bounds = getGlobalSiteBounds(points);
 
@@ -576,6 +649,7 @@ function applyViewMode(map: MapLibreMap, mode: ViewMode, points: GlobalSitePoint
 
 export function GlobalMapScene({
   points,
+  plannedPlants = [],
   anomalySiteId = null,
   inspectionBusy = false,
   onStartInspection,
@@ -587,6 +661,7 @@ export function GlobalMapScene({
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const mapReadyRef = useRef(false);
   const selectedSiteRef = useRef<GlobalSitePoint | null>(null);
+  const selectedPlannedPlantRef = useRef<PlannedPlant | null>(null);
   const anomalySiteRef = useRef<GlobalSitePoint | null>(null);
   const updatePopupLayoutRef = useRef<() => void>(() => {});
   const updateAnomalyLayoutRef = useRef<() => void>(() => {});
@@ -595,6 +670,7 @@ export function GlobalMapScene({
   const [failureMessage, setFailureMessage] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("globe");
   const [selectedSiteId, setSelectedSiteId] = useState<string | null>(null);
+  const [selectedPlannedPlantId, setSelectedPlannedPlantId] = useState<string | null>(null);
   const [popupLayout, setPopupLayout] = useState<PopupLayout | null>(null);
   const [anomalyIndicatorLayout, setAnomalyIndicatorLayout] =
     useState<SiteIndicatorLayout | null>(null);
@@ -603,17 +679,31 @@ export function GlobalMapScene({
     () => toGlobalSiteFeatureCollection(points),
     [points],
   );
+  const plannedPlantFeatureCollection = useMemo(
+    () => toPlannedPlantFeatureCollection(plannedPlants),
+    [plannedPlants],
+  );
 
   const latestPointsRef = useRef(points);
   const latestFeatureCollectionRef = useRef(featureCollection);
+  const latestPlannedPlantFeatureCollectionRef = useRef(
+    plannedPlantFeatureCollection,
+  );
   const latestViewModeRef = useRef<ViewMode>("globe");
 
   const siteById = useMemo(
     () => new Map(points.map((point) => [point.id, point])),
     [points],
   );
+  const plannedPlantById = useMemo(
+    () => new Map(plannedPlants.map((plant) => [plant.plantId, plant])),
+    [plannedPlants],
+  );
 
   const selectedSite = selectedSiteId ? siteById.get(selectedSiteId) ?? null : null;
+  const selectedPlannedPlant = selectedPlannedPlantId
+    ? plannedPlantById.get(selectedPlannedPlantId) ?? null
+    : null;
   const anomalySite = anomalySiteId ? siteById.get(anomalySiteId) ?? null : null;
   const handleZoomIn = useCallback(() => {
     mapRef.current?.zoomIn({ duration: 260 });
@@ -632,12 +722,20 @@ export function GlobalMapScene({
   }, [featureCollection]);
 
   useEffect(() => {
+    latestPlannedPlantFeatureCollectionRef.current = plannedPlantFeatureCollection;
+  }, [plannedPlantFeatureCollection]);
+
+  useEffect(() => {
     latestViewModeRef.current = viewMode;
   }, [viewMode]);
 
   useEffect(() => {
     selectedSiteRef.current = selectedSite;
   }, [selectedSite]);
+
+  useEffect(() => {
+    selectedPlannedPlantRef.current = selectedPlannedPlant;
+  }, [selectedPlannedPlant]);
 
   useEffect(() => {
     anomalySiteRef.current = anomalySite;
@@ -647,31 +745,27 @@ export function GlobalMapScene({
     const map = mapRef.current;
     const container = mapContainerRef.current;
     const currentSelectedSite = selectedSiteRef.current;
+    const currentSelectedPlannedPlant = selectedPlannedPlantRef.current;
 
-    if (!map || !container || !currentSelectedSite) {
+    const target =
+      currentSelectedPlannedPlant ?? currentSelectedSite;
+
+    if (!map || !container || !target) {
       setPopupLayout(null);
       return;
     }
 
-    const projected = map.project([currentSelectedSite.lng, currentSelectedSite.lat]);
-    const safeTop = 96;
-    const safeBottom = 84;
-    const safeLeft = 24;
-    const safeRight = 24;
-
-    const minLeft = safeLeft;
-    const maxLeft = Math.max(safeLeft, container.clientWidth - safeRight - PANEL_WIDTH);
-    const left = Math.min(Math.max(projected.x - PANEL_WIDTH / 2, minLeft), maxLeft);
-
-    const canPlaceBottom =
-      projected.y < PANEL_HEIGHT + safeTop &&
-      container.clientHeight - projected.y > PANEL_HEIGHT + safeBottom;
-
-    setPopupLayout({
-      left,
-      top: projected.y,
-      placement: canPlaceBottom ? "bottom" : "top",
-    });
+    const projected = map.project([target.lng, target.lat]);
+    setPopupLayout(
+      resolveAnchoredPopupLayout({
+        anchorX: projected.x,
+        anchorY: projected.y,
+        containerWidth: container.clientWidth,
+        containerHeight: container.clientHeight,
+        panelWidth: PANEL_WIDTH,
+        panelHeight: PANEL_HEIGHT,
+      }),
+    );
   }, []);
 
   useEffect(() => {
@@ -714,8 +808,9 @@ export function GlobalMapScene({
 
     ensureBasemapSourcesAndLayers(map);
     ensureSiteSourceAndLayers(map, featureCollection);
+    ensurePlannedPlantSourceAndLayers(map, plannedPlantFeatureCollection);
     applyViewMode(map, viewMode, points);
-  }, [featureCollection, points, viewMode]);
+  }, [featureCollection, plannedPlantFeatureCollection, points, viewMode]);
 
   useEffect(() => {
     const frameId = window.requestAnimationFrame(() => {
@@ -726,7 +821,7 @@ export function GlobalMapScene({
     return () => {
       window.cancelAnimationFrame(frameId);
     };
-  }, [anomalySite, selectedSite, viewMode]);
+  }, [anomalySite, selectedPlannedPlant, selectedSite, viewMode]);
 
   useEffect(() => {
     const container = mapContainerRef.current;
@@ -773,6 +868,10 @@ export function GlobalMapScene({
     const syncMap = () => {
       ensureBasemapSourcesAndLayers(map);
       ensureSiteSourceAndLayers(map, latestFeatureCollectionRef.current);
+      ensurePlannedPlantSourceAndLayers(
+        map,
+        latestPlannedPlantFeatureCollectionRef.current,
+      );
       applyViewMode(map, latestViewModeRef.current, latestPointsRef.current);
       window.clearTimeout(failTimer);
       mapReadyRef.current = true;
@@ -798,7 +897,32 @@ export function GlobalMapScene({
         return;
       }
 
+      setSelectedPlannedPlantId(null);
       setSelectedSiteId(featureId);
+    };
+
+    const handlePlannedPlantClick = (
+      event: maplibregl.MapMouseEvent & { features?: maplibregl.MapGeoJSONFeature[] },
+    ) => {
+      const feature = event.features?.[0];
+      const plantId = feature?.properties?.plantId;
+
+      if (typeof plantId !== "string") {
+        return;
+      }
+
+      setPopupLayout(
+        resolveAnchoredPopupLayout({
+          anchorX: event.point.x,
+          anchorY: event.point.y,
+          containerWidth: map.getContainer().clientWidth,
+          containerHeight: map.getContainer().clientHeight,
+          panelWidth: PANEL_WIDTH,
+          panelHeight: PANEL_HEIGHT,
+        }),
+      );
+      setSelectedSiteId(null);
+      setSelectedPlannedPlantId(plantId);
     };
 
     const handleMove = () => {
@@ -810,13 +934,24 @@ export function GlobalMapScene({
       event: maplibregl.MapMouseEvent & { features?: maplibregl.MapGeoJSONFeature[] },
     ) => {
       const features = map.queryRenderedFeatures(event.point, {
-        layers: [SITE_HALO_LAYER_ID, SITE_RING_LAYER_ID, SITE_CORE_LAYER_ID],
+        layers: [
+          PLANNED_HALO_LAYER_ID,
+          PLANNED_CORE_LAYER_ID,
+          SITE_HALO_LAYER_ID,
+          SITE_RING_LAYER_ID,
+          SITE_CORE_LAYER_ID,
+        ],
       });
-      const featureId = features[0]?.properties?.id;
+      const feature = features[0];
+      const featureId = feature?.properties?.id;
+      const plannedPlantId = feature?.properties?.plantId;
 
-      if (typeof featureId !== "string") {
-        setSelectedSiteId(null);
+      if (typeof plannedPlantId === "string" || typeof featureId === "string") {
+        return;
       }
+
+      setSelectedSiteId(null);
+      setSelectedPlannedPlantId(null);
     };
 
     const handleLoad = () => {
@@ -825,6 +960,9 @@ export function GlobalMapScene({
       map.on("mouseenter", SITE_HALO_LAYER_ID, handleMouseEnter);
       map.on("mouseleave", SITE_HALO_LAYER_ID, handleMouseLeave);
       map.on("click", SITE_HALO_LAYER_ID, handleSiteClick);
+      map.on("mouseenter", PLANNED_HALO_LAYER_ID, handleMouseEnter);
+      map.on("mouseleave", PLANNED_HALO_LAYER_ID, handleMouseLeave);
+      map.on("click", PLANNED_HALO_LAYER_ID, handlePlannedPlantClick);
       map.on("click", handleMapClick);
       map.on("move", handleMove);
       map.on("zoom", handleMove);
@@ -860,6 +998,9 @@ export function GlobalMapScene({
       map.off("mouseenter", SITE_HALO_LAYER_ID, handleMouseEnter);
       map.off("mouseleave", SITE_HALO_LAYER_ID, handleMouseLeave);
       map.off("click", SITE_HALO_LAYER_ID, handleSiteClick);
+      map.off("mouseenter", PLANNED_HALO_LAYER_ID, handleMouseEnter);
+      map.off("mouseleave", PLANNED_HALO_LAYER_ID, handleMouseLeave);
+      map.off("click", PLANNED_HALO_LAYER_ID, handlePlannedPlantClick);
       map.off("click", handleMapClick);
       map.off("move", handleMove);
       map.off("zoom", handleMove);
@@ -935,7 +1076,27 @@ export function GlobalMapScene({
 
       <div className="relative z-10 h-full min-h-[620px] w-full" ref={mapContainerRef} />
 
-      {selectedSite && popupLayout ? (
+      {selectedPlannedPlant && popupLayout ? (
+        <div
+          className="absolute z-30"
+          style={{
+            left: popupLayout.left,
+            top: popupLayout.top,
+            width: PANEL_WIDTH,
+            transform:
+              popupLayout.placement === "top"
+                ? "translateY(calc(-100% - 16px))"
+                : "translateY(16px)",
+          }}
+        >
+          <PlannedPlantPopup
+            plannedPlant={selectedPlannedPlant}
+            onClose={() => setSelectedPlannedPlantId(null)}
+          />
+        </div>
+      ) : null}
+
+      {selectedSite && popupLayout && !selectedPlannedPlant ? (
         <div
           className="absolute z-30"
           style={{

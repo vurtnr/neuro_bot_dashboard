@@ -1,0 +1,121 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  buildPlannedPlantMetrics,
+  buildPlannedPlantRedirectUrl,
+  createPlannedPlantFromPayload,
+  getPlannedPlantRegionLabel,
+  upsertPlannedPlant,
+  type PlannedPlant,
+} from "./planned-plant";
+import { sanitizeStoredPlannedPlants } from "./planned-plant-storage";
+
+test("creates a planned plant from websocket payload", () => {
+  const plannedPlant = createPlannedPlantFromPayload({
+    plantId: "plant-42",
+    longitude: 100.42,
+    latitude: 36.17,
+    plantName: "Qinghai/gonghexian",
+    country: "中国",
+    province: "青海",
+    city: "共和县",
+  });
+
+  assert.deepEqual(plannedPlant, {
+    plantId: "plant-42",
+    lng: 100.42,
+    lat: 36.17,
+    name: "Qinghai/gonghexian",
+    country: "中国",
+    province: "青海",
+    city: "共和县",
+  });
+});
+
+test("upserts planned plants by plantId", () => {
+  const existing: PlannedPlant[] = [
+    {
+      plantId: "plant-42",
+      lng: 100,
+      lat: 36,
+      name: "Old",
+      country: "中国",
+      province: "青海",
+      city: "共和县",
+    },
+  ];
+
+  const updated = upsertPlannedPlant(existing, {
+    plantId: "plant-42",
+    lng: 100.42,
+    lat: 36.17,
+    name: "New",
+    country: "中国",
+    province: "青海",
+    city: "共和县",
+  });
+
+  assert.equal(updated.length, 1);
+  assert.equal(updated[0]?.name, "New");
+  assert.equal(updated[0]?.lng, 100.42);
+});
+
+test("builds the continue-planning url from plantId", () => {
+  assert.equal(
+    buildPlannedPlantRedirectUrl("plant-42"),
+    "http://10.180.40.166/#/workspace/info/home?workflowId=plant-42&tab=forward",
+  );
+});
+
+test("sanitizes stored planned plants and removes invalid entries", () => {
+  const result = sanitizeStoredPlannedPlants([
+    {
+      plantId: "plant-42",
+      lng: 100.42,
+      lat: 36.17,
+      name: "Qinghai/gonghexian",
+      country: "中国",
+      province: "青海",
+      city: "共和县",
+    },
+    {
+      plantId: 42,
+    },
+  ]);
+
+  assert.equal(result.length, 1);
+  assert.equal(result[0]?.plantId, "plant-42");
+});
+
+test("formats the planned plant location line for the popup header", () => {
+  const label = getPlannedPlantRegionLabel({
+    plantId: "plant-42",
+    lng: 100.42,
+    lat: 36.17,
+    name: "Qinghai/gonghexian",
+    country: "中国",
+    province: "青海",
+    city: "共和县",
+  });
+
+  assert.equal(label, "中国  青海 · 共和县");
+});
+
+test("builds the redesigned metric set for the planning popup", () => {
+  const metrics = buildPlannedPlantMetrics({
+    plantId: "plant-42",
+    lng: 100.42,
+    lat: 36.17,
+    name: "Qinghai/gonghexian",
+    country: "中国",
+    province: "青海",
+    city: "共和县",
+  });
+
+  assert.deepEqual(
+    metrics.map((metric) => metric.label),
+    ["装机容量", "预计实时功率", "环境温度", "辐照强度"],
+  );
+  assert.equal(metrics.length, 4);
+});

@@ -1,7 +1,11 @@
+import type { PlantCreatedConnectionTone } from "./plant-created-websocket";
+
 type GlobalHeaderProps = {
   title: string;
   description: string;
   statusLabel: string;
+  connectionStatusLabel?: string;
+  connectionStatusTone?: PlantCreatedConnectionTone;
   actionLabel?: string;
   actionHref?: string;
 };
@@ -10,14 +14,38 @@ export function GlobalHeader({
   title,
   description,
   statusLabel,
+  connectionStatusLabel,
+  connectionStatusTone = "muted",
   actionLabel,
   actionHref,
 }: GlobalHeaderProps) {
+  const connectionStatusClassName =
+    connectionStatusTone === "success"
+      ? "border-emerald-100 bg-white/82 text-emerald-900"
+      : connectionStatusTone === "info"
+        ? "border-sky-100 bg-white/82 text-sky-900"
+        : connectionStatusTone === "warning"
+          ? "border-amber-100 bg-white/82 text-amber-900"
+          : connectionStatusTone === "critical"
+            ? "border-rose-100 bg-white/82 text-rose-900"
+            : "border-slate-200 bg-white/82 text-slate-700";
+
+  const connectionDotClassName =
+    connectionStatusTone === "success"
+      ? "bg-emerald-500 shadow-[0_0_0_4px_rgba(16,185,129,0.16)]"
+      : connectionStatusTone === "info"
+        ? "bg-cyan-500 shadow-[0_0_0_4px_rgba(34,211,238,0.16)]"
+        : connectionStatusTone === "warning"
+          ? "bg-amber-500 shadow-[0_0_0_4px_rgba(245,158,11,0.16)]"
+          : connectionStatusTone === "critical"
+            ? "bg-rose-500 shadow-[0_0_0_4px_rgba(244,63,94,0.16)]"
+            : "bg-slate-400 shadow-[0_0_0_4px_rgba(148,163,184,0.16)]";
+
   return (
     <header className="relative overflow-hidden rounded-[28px] border border-white/80 bg-white/70 px-6 py-5 shadow-[0_20px_60px_rgba(123,167,194,0.16)] backdrop-blur-xl">
       <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.92),rgba(255,255,255,0.62)_52%,rgba(214,240,255,0.76)_100%)]" />
 
-      <div className="relative flex items-start justify-between gap-5">
+      <div className="relative">
         <div className="flex min-w-0 items-start gap-4">
           <span className="mt-0.5 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-sky-100 bg-[linear-gradient(180deg,#ffffff,#eef8ff)] text-lg text-sky-700 shadow-[0_12px_28px_rgba(112,170,207,0.12)]">
             ◎
@@ -41,7 +69,7 @@ export function GlobalHeader({
           </div>
         </div>
 
-        <div className="flex shrink-0 flex-wrap items-center justify-end gap-3">
+        <div className="mt-5 flex flex-wrap items-center gap-3">
           {actionLabel && actionHref ? (
             <a
               href={actionHref}
@@ -71,6 +99,21 @@ export function GlobalHeader({
               {statusLabel}
             </span>
           </div>
+
+          {connectionStatusLabel ? (
+            <div
+              className={`flex items-center gap-3 rounded-full border px-4 py-2.5 shadow-[0_14px_30px_rgba(123,167,194,0.12)] ${connectionStatusClassName}`}
+            >
+              <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-white/70">
+                <span
+                  className={`inline-flex h-2.5 w-2.5 rounded-full ${connectionDotClassName}`}
+                />
+              </span>
+              <span className="text-[11px] font-semibold tracking-[0.18em] uppercase">
+                {connectionStatusLabel}
+              </span>
+            </div>
+          ) : null}
         </div>
       </div>
     </header>

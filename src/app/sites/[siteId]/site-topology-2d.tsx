@@ -21,15 +21,16 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import RobotInspectionModal from "@/components/robot-inspection-modal";
 import RobotPatrolLockCard from "@/components/robot-patrol-lock-card";
 import RobotPatrolModal from "@/components/robot-patrol-modal";
-import {
-  subscribeQinghaiSitePatrolEvents,
-} from "@/lib/robot-inspection/site-patrol";
+import { subscribeQinghaiSitePatrolEvents } from "@/lib/robot-inspection/site-patrol";
 import { getResolvedWorkOrderNodeIds } from "@/lib/work-order-resolution";
 import { useRobotInspection } from "@/lib/robot-inspection/use-robot-inspection";
 import { useRobotPatrol } from "@/lib/robot-inspection/use-robot-patrol";
 import { generateMinuteLevelData } from "@/utils";
 import SiteTopologyFlow from "./site-topology-flow";
-import type { PatrolLockedDevice, RobotInspectionEvent } from "@/lib/robot-inspection/types";
+import type {
+  PatrolLockedDevice,
+  RobotInspectionEvent,
+} from "@/lib/robot-inspection/types";
 
 type ThemeMode = "day" | "sunset";
 type DeviceStatus = "normal" | "warning" | "fault" | "offline";
@@ -285,7 +286,8 @@ function createPvStatusPool(total: number): DeviceStatus[] {
     return { status, remainder: raw - count };
   });
 
-  const remaining = total - Object.values(countByStatus).reduce((sum, count) => sum + count, 0);
+  const remaining =
+    total - Object.values(countByStatus).reduce((sum, count) => sum + count, 0);
   withRemainder
     .sort((a, b) => b.remainder - a.remainder)
     .forEach((item, index) => {
@@ -553,7 +555,9 @@ function CabinetNode({ data }: NodeProps<Node<TopologyNodeData>>) {
       <span className="text-[11px] font-semibold leading-tight">
         {data.label}
       </span>
-      <span className="text-[10px] opacity-80">{data.subtitle ?? "储能电柜"}</span>
+      <span className="text-[10px] opacity-80">
+        {data.subtitle ?? "储能电柜"}
+      </span>
       {data.hasWorkOrder ? <WorkOrderBadge /> : null}
       {locked ? (
         <span className="absolute -top-2 right-2 rounded-full border border-cyan-200 bg-cyan-50 px-1.5 py-0.5 text-[9px] font-semibold text-cyan-700">
@@ -597,7 +601,11 @@ function HubNode({ data }: NodeProps<Node<TopologyNodeData>>) {
 
   return (
     <div
-      className={hasLabel ? "relative rounded-md px-2 py-1 text-[10px] font-semibold text-slate-700" : "relative h-2 w-2 opacity-0"}
+      className={
+        hasLabel
+          ? "relative rounded-md px-2 py-1 text-[10px] font-semibold text-slate-700"
+          : "relative h-2 w-2 opacity-0"
+      }
       style={
         hasLabel
           ? {
@@ -758,39 +766,47 @@ export default function SiteTopology2D({
   const {
     patrolState,
     startPatrol,
-    stopPatrol,
     dismissPatrolError,
+    isPatrolSupported,
+    unsupportedPatrolMessage,
   } = useRobotPatrol(siteId);
   const [inverterSeries, setInverterSeries] = useState<InverterCsvSeries[]>([]);
-  const [inverterSeriesError, setInverterSeriesError] = useState<string | null>(null);
+  const [inverterSeriesError, setInverterSeriesError] = useState<string | null>(
+    null,
+  );
   const [topologyView, setTopologyView] = useState<"2d" | "3d">("2d");
   const [isTopologyFullscreen, setIsTopologyFullscreen] = useState(false);
   const [ncuPanelOpen, setNcuPanelOpen] = useState(true);
   const [cabinetPanelOpen, setCabinetPanelOpen] = useState(true);
   const [blockedNodeMessage, setBlockedNodeMessage] = useState("");
   const [siteToast, setSiteToast] = useState<SiteToastState | null>(null);
-  const [simulatedReviewNodeId, setSimulatedReviewNodeId] = useState<string | null>(
+  const [simulatedReviewNodeId, setSimulatedReviewNodeId] = useState<
+    string | null
+  >(null);
+  const [highlightedNodeId, setHighlightedNodeId] = useState<string | null>(
     null,
   );
-  const [highlightedNodeId, setHighlightedNodeId] = useState<string | null>(null);
   const [focusNodeId, setFocusNodeId] = useState<string | null>(null);
-  const [resolvedWorkOrderNodeIds, setResolvedWorkOrderNodeIds] = useState<string[]>([]);
+  const [resolvedWorkOrderNodeIds, setResolvedWorkOrderNodeIds] = useState<
+    string[]
+  >([]);
   const topologyPanelRef = useRef<HTMLElement | null>(null);
   const blockedNodeTimerRef = useRef<number | null>(null);
   const toastTimerRef = useRef<number | null>(null);
-  const reactFlowInstanceRef = useRef<
-    ReactFlowInstance<Node<TopologyNodeData>, Edge> | null
-  >(null);
+  const reactFlowInstanceRef = useRef<ReactFlowInstance<
+    Node<TopologyNodeData>,
+    Edge
+  > | null>(null);
   const pageTheme = THEME.day;
   const topologyTheme = THEME.day;
   const lockedDevice = patrolState.lockedDevice;
   const lockedNodeId = lockedDevice?.nodeId ?? null;
   const patrolModalOpen =
     patrolState.status === "starting" ||
-    patrolState.status === "announcing" ||
+    patrolState.status === "dispatching" ||
     (patrolState.status === "error" && !lockedDevice);
   const patrolModalLoading =
-    patrolState.status === "starting" || patrolState.status === "announcing";
+    patrolState.status === "starting" || patrolState.status === "dispatching";
   const resolvedWorkOrderNodeIdSet = useMemo(
     () => new Set(resolvedWorkOrderNodeIds),
     [resolvedWorkOrderNodeIds],
@@ -802,11 +818,10 @@ export default function SiteTopology2D({
     () =>
       basePvRuntimeData.map((item, index) => ({
         ...item,
-        hasWorkOrder:
-          activeReviewNodeId
-            ? `ncu-${index + 1}` === activeReviewNodeId &&
-              !resolvedWorkOrderNodeIdSet.has(`ncu-${index + 1}`)
-            : false,
+        hasWorkOrder: activeReviewNodeId
+          ? `ncu-${index + 1}` === activeReviewNodeId &&
+            !resolvedWorkOrderNodeIdSet.has(`ncu-${index + 1}`)
+          : false,
       })),
     [activeReviewNodeId, basePvRuntimeData, resolvedWorkOrderNodeIdSet],
   );
@@ -814,11 +829,10 @@ export default function SiteTopology2D({
     () =>
       baseCabinetRuntimeData.map((item, index) => ({
         ...item,
-        hasWorkOrder:
-          activeReviewNodeId
-            ? `cabinet-${index + 1}` === activeReviewNodeId &&
-              !resolvedWorkOrderNodeIdSet.has(`cabinet-${index + 1}`)
-            : false,
+        hasWorkOrder: activeReviewNodeId
+          ? `cabinet-${index + 1}` === activeReviewNodeId &&
+            !resolvedWorkOrderNodeIdSet.has(`cabinet-${index + 1}`)
+          : false,
       })),
     [activeReviewNodeId, baseCabinetRuntimeData, resolvedWorkOrderNodeIdSet],
   );
@@ -886,7 +900,9 @@ export default function SiteTopology2D({
 
   useEffect(() => {
     const syncFullscreenState = () => {
-      setIsTopologyFullscreen(document.fullscreenElement === topologyPanelRef.current);
+      setIsTopologyFullscreen(
+        document.fullscreenElement === topologyPanelRef.current,
+      );
     };
 
     document.addEventListener("fullscreenchange", syncFullscreenState);
@@ -931,7 +947,8 @@ export default function SiteTopology2D({
         pushSiteToast({
           tone: "info",
           message:
-            event.message ?? "机器人消息：已接收巡检任务，当前进入青海场站巡检模式",
+            event.message ??
+            "机器人消息：已接收巡检任务，当前进入青海场站巡检模式",
         });
         return;
       }
@@ -950,12 +967,15 @@ export default function SiteTopology2D({
       });
     };
 
-    const eventSource = subscribeQinghaiSitePatrolEvents(applyPatrolEvent, () => {
-      pushSiteToast({
-        tone: "critical",
-        message: "机器人巡检事件通道已断开，请检查桥接服务连接。",
-      });
-    });
+    const eventSource = subscribeQinghaiSitePatrolEvents(
+      applyPatrolEvent,
+      () => {
+        pushSiteToast({
+          tone: "critical",
+          message: "机器人巡检事件通道已断开，请检查桥接服务连接。",
+        });
+      },
+    );
 
     return () => {
       eventSource.close();
@@ -1041,7 +1061,10 @@ export default function SiteTopology2D({
   );
 
   const isDay = true;
-  const chargePower = Math.max(0, Number(dashboardData.storagePowerMw.toFixed(2)));
+  const chargePower = Math.max(
+    0,
+    Number(dashboardData.storagePowerMw.toFixed(2)),
+  );
   const dischargePower = Math.max(
     0,
     Number(Math.abs(Math.min(0, dashboardData.storagePowerMw)).toFixed(2)),
@@ -1068,21 +1091,41 @@ export default function SiteTopology2D({
 
   const overviewCards = useMemo(
     () => [
-      { label: "光伏功率", value: `${dashboardData.pvPowerMw.toFixed(2)} MW`, icon: "☀" },
+      {
+        label: "光伏功率",
+        value: `${dashboardData.pvPowerMw.toFixed(2)} MW`,
+        icon: "☀",
+      },
       {
         label: "储能功率",
         value: `${dashboardData.storagePowerMw >= 0 ? "充电" : "放电"} ${Math.abs(dashboardData.storagePowerMw).toFixed(2)} MW`,
         icon: "↻",
       },
-      { label: "负载功率", value: `${dashboardData.loadPowerMw.toFixed(2)} MW`, icon: "⌁" },
+      {
+        label: "负载功率",
+        value: `${dashboardData.loadPowerMw.toFixed(2)} MW`,
+        icon: "⌁",
+      },
       {
         label: "并网/馈电",
         value: `${dashboardData.gridPowerMw >= 0 ? "并网" : "馈电"} ${Math.abs(dashboardData.gridPowerMw).toFixed(2)} MW`,
         icon: "⇆",
       },
-      { label: "减排二氧化碳", value: `${dashboardData.co2ReductionTons.toFixed(2)} 吨`, icon: "♻" },
-      { label: "等效植树", value: `${dashboardData.treeEquivalent.toLocaleString()} 棵`, icon: "🌱" },
-      { label: "峰谷收益", value: `¥ ${dashboardData.arbitrageIncome.toLocaleString()}`, icon: "¥" },
+      {
+        label: "减排二氧化碳",
+        value: `${dashboardData.co2ReductionTons.toFixed(2)} 吨`,
+        icon: "♻",
+      },
+      {
+        label: "等效植树",
+        value: `${dashboardData.treeEquivalent.toLocaleString()} 棵`,
+        icon: "🌱",
+      },
+      {
+        label: "峰谷收益",
+        value: `¥ ${dashboardData.arbitrageIncome.toLocaleString()}`,
+        icon: "¥",
+      },
       { label: "天气", value: dashboardData.weather, icon: "☁" },
     ],
     [dashboardData],
@@ -1155,8 +1198,16 @@ export default function SiteTopology2D({
             {
               type: "pie",
               data: [
-                { name: "SOC", y: socValue, color: isDay ? "#22c55e" : "#f97316" },
-                { name: "剩余", y: 100 - socValue, color: isDay ? "#dbeafe" : "#ffedd5" },
+                {
+                  name: "SOC",
+                  y: socValue,
+                  color: isDay ? "#22c55e" : "#f97316",
+                },
+                {
+                  name: "剩余",
+                  y: 100 - socValue,
+                  color: isDay ? "#dbeafe" : "#ffedd5",
+                },
               ],
             },
           ],
@@ -1191,7 +1242,10 @@ export default function SiteTopology2D({
               type: "column",
               data: [chargePower || 0.01, dischargePower || 0.01],
               colorByPoint: true,
-              colors: [isDay ? "#22c55e" : "#fb923c", isDay ? "#0ea5e9" : "#f97316"],
+              colors: [
+                isDay ? "#22c55e" : "#fb923c",
+                isDay ? "#0ea5e9" : "#f97316",
+              ],
             },
           ],
         } as Highcharts.Options,
@@ -1219,16 +1273,36 @@ export default function SiteTopology2D({
             {
               type: "pie",
               data: [
-                { name: "生产负载", y: loadComposition.production, color: isDay ? "#6366f1" : "#ea580c" },
-                { name: "工艺负载", y: loadComposition.process, color: isDay ? "#0ea5e9" : "#fb923c" },
-                { name: "站控负载", y: loadComposition.station, color: isDay ? "#14b8a6" : "#fdba74" },
+                {
+                  name: "生产负载",
+                  y: loadComposition.production,
+                  color: isDay ? "#6366f1" : "#ea580c",
+                },
+                {
+                  name: "工艺负载",
+                  y: loadComposition.process,
+                  color: isDay ? "#0ea5e9" : "#fb923c",
+                },
+                {
+                  name: "站控负载",
+                  y: loadComposition.station,
+                  color: isDay ? "#14b8a6" : "#fdba74",
+                },
               ],
             },
           ],
         } as Highcharts.Options,
       },
     ],
-    [chargePower, dischargePower, isDay, loadComposition.process, loadComposition.production, loadComposition.station, socValue],
+    [
+      chargePower,
+      dischargePower,
+      isDay,
+      loadComposition.process,
+      loadComposition.production,
+      loadComposition.station,
+      socValue,
+    ],
   );
 
   const bottomCharts = useMemo(
@@ -1266,7 +1340,10 @@ export default function SiteTopology2D({
               type: "column",
               data: [inverterOnlineRate, batteryClusterOnlineRate],
               colorByPoint: true,
-              colors: [isDay ? "#22c55e" : "#f97316", isDay ? "#0ea5e9" : "#fb923c"],
+              colors: [
+                isDay ? "#22c55e" : "#f97316",
+                isDay ? "#0ea5e9" : "#fb923c",
+              ],
             },
           ],
         } as Highcharts.Options,
@@ -1295,19 +1372,25 @@ export default function SiteTopology2D({
               new Map(
                 inverterSeries
                   .flatMap((series) =>
-                    series.points.map((point) => [point.timeLabel, point.sortKey] as const),
+                    series.points.map(
+                      (point) => [point.timeLabel, point.sortKey] as const,
+                    ),
                   )
                   .sort((left, right) => left[1].localeCompare(right[1])),
               ).keys(),
             ),
             tickLength: 0,
-            lineColor: isDay ? "rgba(148,163,184,0.35)" : "rgba(251,146,60,0.32)",
+            lineColor: isDay
+              ? "rgba(148,163,184,0.35)"
+              : "rgba(251,146,60,0.32)",
             labels: {
               style: { color: isDay ? "#64748b" : "#9a3412", fontSize: "10px" },
             },
             plotBands: [
               {
-                color: isDay ? "rgba(191,219,254,0.22)" : "rgba(254,215,170,0.24)",
+                color: isDay
+                  ? "rgba(191,219,254,0.22)"
+                  : "rgba(254,215,170,0.24)",
                 from: 3,
                 to: 7,
               },
@@ -1317,24 +1400,38 @@ export default function SiteTopology2D({
             {
               title: {
                 text: "输出功率",
-                style: { color: isDay ? "#2563eb" : "#ea580c", fontSize: "10px" },
+                style: {
+                  color: isDay ? "#2563eb" : "#ea580c",
+                  fontSize: "10px",
+                },
               },
               min: 0,
-              gridLineColor: isDay ? "rgba(100,116,139,0.14)" : "rgba(217,119,6,0.16)",
+              gridLineColor: isDay
+                ? "rgba(100,116,139,0.14)"
+                : "rgba(217,119,6,0.16)",
               labels: {
-                style: { color: isDay ? "#64748b" : "#9a3412", fontSize: "10px" },
+                style: {
+                  color: isDay ? "#64748b" : "#9a3412",
+                  fontSize: "10px",
+                },
               },
             },
             {
               title: {
                 text: "发电量",
-                style: { color: isDay ? "#65a30d" : "#d97706", fontSize: "10px" },
+                style: {
+                  color: isDay ? "#65a30d" : "#d97706",
+                  fontSize: "10px",
+                },
               },
               min: 0,
               opposite: true,
               gridLineWidth: 0,
               labels: {
-                style: { color: isDay ? "#64748b" : "#9a3412", fontSize: "10px" },
+                style: {
+                  color: isDay ? "#64748b" : "#9a3412",
+                  fontSize: "10px",
+                },
               },
             },
           ],
@@ -1343,7 +1440,9 @@ export default function SiteTopology2D({
             backgroundColor: isDay
               ? "rgba(255,255,255,0.96)"
               : "rgba(255,247,237,0.96)",
-            borderColor: isDay ? "rgba(59,130,246,0.28)" : "rgba(249,115,22,0.28)",
+            borderColor: isDay
+              ? "rgba(59,130,246,0.28)"
+              : "rgba(249,115,22,0.28)",
             shadow: false,
           },
           series: (() => {
@@ -1351,13 +1450,17 @@ export default function SiteTopology2D({
               new Map(
                 inverterSeries
                   .flatMap((series) =>
-                    series.points.map((point) => [point.timeLabel, point.sortKey] as const),
+                    series.points.map(
+                      (point) => [point.timeLabel, point.sortKey] as const,
+                    ),
                   )
                   .sort((left, right) => left[1].localeCompare(right[1])),
               ).keys(),
             );
             const pointMapBySeries = inverterSeries.map((series) => {
-              const map = new Map(series.points.map((point) => [point.timeLabel, point] as const));
+              const map = new Map(
+                series.points.map((point) => [point.timeLabel, point] as const),
+              );
               return { source: series.source, map };
             });
             const pacColors = isDay
@@ -1368,9 +1471,15 @@ export default function SiteTopology2D({
               : ["rgba(253,224,71,0.78)", "rgba(250,204,21,0.42)"];
 
             return pointMapBySeries.flatMap(({ source, map }, seriesIndex) => {
-              const pacData = orderedTimeLabels.map((label) => map.get(label)?.pac ?? null);
-              const edayData = orderedTimeLabels.map((label) => map.get(label)?.eday ?? null);
-              const etotalData = orderedTimeLabels.map((label) => map.get(label)?.etotal ?? null);
+              const pacData = orderedTimeLabels.map(
+                (label) => map.get(label)?.pac ?? null,
+              );
+              const edayData = orderedTimeLabels.map(
+                (label) => map.get(label)?.eday ?? null,
+              );
+              const etotalData = orderedTimeLabels.map(
+                (label) => map.get(label)?.etotal ?? null,
+              );
 
               return [
                 {
@@ -1406,9 +1515,14 @@ export default function SiteTopology2D({
                   name: `${source} 总发电量`,
                   data: etotalData,
                   yAxis: 1,
-                  color: seriesIndex === 0
-                    ? (isDay ? "rgba(101,163,13,0.95)" : "rgba(202,138,4,0.95)")
-                    : (isDay ? "rgba(132,204,22,0.75)" : "rgba(234,179,8,0.75)"),
+                  color:
+                    seriesIndex === 0
+                      ? isDay
+                        ? "rgba(101,163,13,0.95)"
+                        : "rgba(202,138,4,0.95)"
+                      : isDay
+                        ? "rgba(132,204,22,0.75)"
+                        : "rgba(234,179,8,0.75)",
                   dashStyle: seriesIndex === 0 ? "Solid" : "ShortDash",
                   lineWidth: 1.6,
                   marker: {
@@ -1471,9 +1585,17 @@ export default function SiteTopology2D({
           series: [
             {
               type: "bar",
-              data: [workOrderData.pending, workOrderData.processing, workOrderData.closed],
+              data: [
+                workOrderData.pending,
+                workOrderData.processing,
+                workOrderData.closed,
+              ],
               colorByPoint: true,
-              colors: [isDay ? "#f59e0b" : "#fb923c", isDay ? "#0ea5e9" : "#f97316", isDay ? "#22c55e" : "#fdba74"],
+              colors: [
+                isDay ? "#f59e0b" : "#fb923c",
+                isDay ? "#0ea5e9" : "#f97316",
+                isDay ? "#22c55e" : "#fdba74",
+              ],
             },
           ],
         } as Highcharts.Options,
@@ -1504,8 +1626,7 @@ export default function SiteTopology2D({
     const frameLabelBand = 34;
     const frameBottomBand = 52;
     const maxRows = 5;
-    const frameWidth =
-      framePaddingX * 2 + (localCols - 1) * ncuGapX + ncuWidth;
+    const frameWidth = framePaddingX * 2 + (localCols - 1) * ncuGapX + ncuWidth;
     const frameHeight =
       framePaddingY * 2 +
       frameLabelBand +
@@ -1519,7 +1640,8 @@ export default function SiteTopology2D({
     const cabinetRows = 2;
     const cabinetRowGap = 142;
     const cabinetColGap = 164;
-    const storageContentWidth = cabinetNodeWidth + cabinetColGap * (cabinetCols - 1);
+    const storageContentWidth =
+      cabinetNodeWidth + cabinetColGap * (cabinetCols - 1);
     const storageContentHeight =
       cabinetNodeHeight + cabinetRowGap * (cabinetRows - 1);
     const storageFramePaddingX = 62;
@@ -1554,12 +1676,32 @@ export default function SiteTopology2D({
       { x: frameWidth + 8, y: frameHeight * 0.28, sourceHandle: "right" },
     ] as const;
     const pvIngressLayouts = [
-      { x: storageFrameX - 16, y: storageFrameY + storageFrameHeight * 0.22, targetHandle: "left" },
+      {
+        x: storageFrameX - 16,
+        y: storageFrameY + storageFrameHeight * 0.22,
+        targetHandle: "left",
+      },
       { x: topologyCenterX, y: storageFrameY - 18, targetHandle: "top" },
-      { x: storageFrameX + storageFrameWidth + 16, y: storageFrameY + storageFrameHeight * 0.22, targetHandle: "right" },
-      { x: storageFrameX + storageFrameWidth + 16, y: storageFrameY + storageFrameHeight * 0.78, targetHandle: "right" },
-      { x: topologyCenterX, y: storageFrameY + storageFrameHeight + 18, targetHandle: "bottom" },
-      { x: storageFrameX - 16, y: storageFrameY + storageFrameHeight * 0.78, targetHandle: "left" },
+      {
+        x: storageFrameX + storageFrameWidth + 16,
+        y: storageFrameY + storageFrameHeight * 0.22,
+        targetHandle: "right",
+      },
+      {
+        x: storageFrameX + storageFrameWidth + 16,
+        y: storageFrameY + storageFrameHeight * 0.78,
+        targetHandle: "right",
+      },
+      {
+        x: topologyCenterX,
+        y: storageFrameY + storageFrameHeight + 18,
+        targetHandle: "bottom",
+      },
+      {
+        x: storageFrameX - 16,
+        y: storageFrameY + storageFrameHeight * 0.78,
+        targetHandle: "left",
+      },
     ] as const;
 
     const flowNodes: Node<TopologyNodeData>[] = [];
@@ -1604,9 +1746,15 @@ export default function SiteTopology2D({
       });
     });
 
-    for (let clusterIndex = 0; clusterIndex < clusterCounts.length; clusterIndex += 1) {
-      const baseX = topologyCenterX + clusterOffsets[clusterIndex].x - frameWidth / 2;
-      const baseY = topologyCenterY + clusterOffsets[clusterIndex].y - frameHeight / 2;
+    for (
+      let clusterIndex = 0;
+      clusterIndex < clusterCounts.length;
+      clusterIndex += 1
+    ) {
+      const baseX =
+        topologyCenterX + clusterOffsets[clusterIndex].x - frameWidth / 2;
+      const baseY =
+        topologyCenterY + clusterOffsets[clusterIndex].y - frameHeight / 2;
       const hubLayout = hubLayouts[clusterIndex];
 
       flowNodes.push({
@@ -1656,11 +1804,7 @@ export default function SiteTopology2D({
           type: "ncu",
           position: {
             x: baseX + framePaddingX + localCol * ncuGapX,
-            y:
-              baseY +
-              framePaddingY +
-              frameLabelBand +
-              localRow * ncuGapY,
+            y: baseY + framePaddingY + frameLabelBand + localRow * ncuGapY,
           },
           draggable: false,
           selectable: false,
@@ -1754,7 +1898,13 @@ export default function SiteTopology2D({
     }
 
     return { nodes: flowNodes, edges: flowEdges };
-  }, [cabinetRuntimeData, highlightedNodeId, lockedNodeId, pvRuntimeData, topologyTheme.flowEdge]);
+  }, [
+    cabinetRuntimeData,
+    highlightedNodeId,
+    lockedNodeId,
+    pvRuntimeData,
+    topologyTheme.flowEdge,
+  ]);
 
   const handleSiteToastClick = () => {
     if (!siteToast?.actionable || !simulatedReviewNodeId) {
@@ -1764,7 +1914,9 @@ export default function SiteTopology2D({
     setTopologyView("2d");
     setHighlightedNodeId(simulatedReviewNodeId);
     setFocusNodeId(simulatedReviewNodeId);
-    showTopologyTip(`已定位异常设备 ${simulatedReviewNodeId.toUpperCase().replace("-", " ")}`);
+    showTopologyTip(
+      `已定位异常设备 ${simulatedReviewNodeId.toUpperCase().replace("-", " ")}`,
+    );
   };
 
   useEffect(() => {
@@ -1817,7 +1969,9 @@ export default function SiteTopology2D({
       query.set("targetAngle", inspectionAngles.targetAngle.toFixed(1));
     }
 
-    router.push(`/sites/${siteId}/devices/${DEVICE_DETAIL_ID}?${query.toString()}`);
+    router.push(
+      `/sites/${siteId}/devices/${DEVICE_DETAIL_ID}?${query.toString()}`,
+    );
   };
 
   const beginLockedDeviceInspection = () => {
@@ -1838,7 +1992,10 @@ export default function SiteTopology2D({
     );
   };
 
-  const handleTopologyNodeClick = (_: unknown, node: Node<TopologyNodeData>) => {
+  const handleTopologyNodeClick = (
+    _: unknown,
+    node: Node<TopologyNodeData>,
+  ) => {
     if (topologyView !== "2d") {
       return;
     }
@@ -1893,7 +2050,9 @@ export default function SiteTopology2D({
 
   return (
     <ReactFlowProvider>
-      <div className={`h-screen w-screen overflow-hidden bg-gradient-to-br ${pageTheme.shell} text-slate-900`}>
+      <div
+        className={`h-screen w-screen overflow-hidden bg-gradient-to-br ${pageTheme.shell} text-slate-900`}
+      >
         <RobotInspectionModal
           open={dialogState.open}
           loading={dialogState.loading}
@@ -1941,12 +2100,17 @@ export default function SiteTopology2D({
           >
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <p className={`text-xs font-semibold tracking-[0.12em] uppercase ${pageTheme.accent}`}>
+                <p
+                  className={`text-xs font-semibold tracking-[0.12em] uppercase ${pageTheme.accent}`}
+                >
                   2D 场站详情
                 </p>
-                <h1 className={`text-lg font-semibold ${pageTheme.textMain}`}>{dashboardData.siteName}</h1>
+                <h1 className={`text-lg font-semibold ${pageTheme.textMain}`}>
+                  {dashboardData.siteName}
+                </h1>
                 <p className={`text-xs ${pageTheme.textSub}`}>
-                  {dashboardData.location} · 装机容量 {dashboardData.capacity} MW
+                  {dashboardData.location} · 装机容量 {dashboardData.capacity}{" "}
+                  MW
                 </p>
               </div>
               <button
@@ -1955,7 +2119,7 @@ export default function SiteTopology2D({
                 className="inline-flex items-center gap-2 rounded-full border border-sky-200 bg-white/90 px-4 py-2 text-sm font-semibold text-sky-700 shadow-[0_10px_24px_rgba(14,116,144,0.12)] transition hover:border-sky-300 hover:text-sky-800"
               >
                 <span aria-hidden="true">←</span>
-                返回全球运维总览
+                返回全球运营总览
               </button>
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-8">
@@ -1964,8 +2128,12 @@ export default function SiteTopology2D({
                   key={card.label}
                   className={`rounded-lg border px-2.5 py-2 ${pageTheme.panel}`}
                 >
-                  <p className="text-[11px] text-slate-500">{card.icon} {card.label}</p>
-                  <p className="mt-0.5 text-sm font-semibold text-slate-800">{card.value}</p>
+                  <p className="text-[11px] text-slate-500">
+                    {card.icon} {card.label}
+                  </p>
+                  <p className="mt-0.5 text-sm font-semibold text-slate-800">
+                    {card.value}
+                  </p>
                 </div>
               ))}
             </div>
@@ -1975,14 +2143,24 @@ export default function SiteTopology2D({
             <section
               className={`min-h-0 overflow-hidden rounded-2xl border p-2.5 xl:col-span-3 xl:row-span-1 ${pageTheme.panel} ${pageTheme.panelShadow}`}
             >
-              <p className={`px-1 pb-1 text-xs font-semibold tracking-[0.08em] uppercase ${pageTheme.accent}`}>
+              <p
+                className={`px-1 pb-1 text-xs font-semibold tracking-[0.08em] uppercase ${pageTheme.accent}`}
+              >
                 环境与发电
               </p>
               <div className="grid h-[600px] min-h-0 grid-rows-3 gap-2 xl:h-full">
                 {leftCharts.map((item) => (
-                  <div key={item.title} className="min-h-0 overflow-hidden rounded-xl border border-white/70 bg-white/65 p-2">
-                    <p className="px-1 text-[11px] font-semibold text-slate-600">{item.title}</p>
-                    <HighchartsReact highcharts={Highcharts} options={item.options} />
+                  <div
+                    key={item.title}
+                    className="min-h-0 overflow-hidden rounded-xl border border-white/70 bg-white/65 p-2"
+                  >
+                    <p className="px-1 text-[11px] font-semibold text-slate-600">
+                      {item.title}
+                    </p>
+                    <HighchartsReact
+                      highcharts={Highcharts}
+                      options={item.options}
+                    />
                   </div>
                 ))}
               </div>
@@ -1997,7 +2175,9 @@ export default function SiteTopology2D({
               }`}
             >
               <div className="mb-2 flex items-center justify-between px-1">
-                <p className={`text-xs font-semibold tracking-[0.08em] uppercase ${topologyTheme.accent}`}>
+                <p
+                  className={`text-xs font-semibold tracking-[0.08em] uppercase ${topologyTheme.accent}`}
+                >
                   场站拓扑
                 </p>
                 <div className="flex items-center gap-2">
@@ -2006,17 +2186,26 @@ export default function SiteTopology2D({
                     onClick={() => {
                       void startPatrol();
                     }}
-                    disabled={patrolState.status !== "idle" && patrolState.status !== "error"}
+                    disabled={
+                      !isPatrolSupported ||
+                      (patrolState.status !== "idle" &&
+                        patrolState.status !== "error")
+                    }
                     className={`rounded-full px-3 py-1 text-[11px] font-semibold transition ${
-                      patrolState.status !== "idle" && patrolState.status !== "error"
+                      !isPatrolSupported ||
+                      (patrolState.status !== "idle" &&
+                        patrolState.status !== "error")
                         ? "cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400"
                         : "border border-cyan-200 bg-cyan-50 text-cyan-700 hover:border-cyan-300 hover:bg-cyan-100"
                     }`}
                   >
-                    {patrolState.status === "locked" || patrolState.status === "cancelling"
-                      ? "巡检中"
-                      : "开始巡检"}
+                    {patrolState.status === "anomaly" ? "巡检中" : "开始巡检"}
                   </button>
+                  {!isPatrolSupported ? (
+                    <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[11px] font-medium text-amber-700">
+                      {unsupportedPatrolMessage}
+                    </span>
+                  ) : null}
                   <div className="inline-flex rounded-full border border-slate-200/80 bg-white/80 p-0.5">
                     <button
                       type="button"
@@ -2041,7 +2230,9 @@ export default function SiteTopology2D({
                       3D视角
                     </button>
                   </div>
-                  <span className={`rounded-full border px-2 py-0.5 text-[11px] ${topologyTheme.chip}`}>
+                  <span
+                    className={`rounded-full border px-2 py-0.5 text-[11px] ${topologyTheme.chip}`}
+                  >
                     155 NCU · 10 储能电柜
                   </span>
                   <button
@@ -2095,13 +2286,9 @@ export default function SiteTopology2D({
                   open={Boolean(lockedDevice)}
                   device={lockedDevice}
                   message={patrolState.message}
-                  error={patrolState.status === "locked" || patrolState.status === "cancelling" ? patrolState.error : ""}
+                  error={patrolState.error}
                   scanPending={dialogState.loading}
-                  stopPending={patrolState.status === "cancelling"}
                   onConnect={beginLockedDeviceInspection}
-                  onStop={() => {
-                    void stopPatrol();
-                  }}
                 />
                 {topologyView === "2d" ? (
                   <>
@@ -2240,15 +2427,25 @@ export default function SiteTopology2D({
                         </div>
                         <div className="grid grid-cols-5 gap-2 p-2">
                           {cabinetRuntimeData.map((item, index) => {
-                            const soc = Math.max(0, Math.min(100, item.metrics.soc));
+                            const soc = Math.max(
+                              0,
+                              Math.min(100, item.metrics.soc),
+                            );
                             const tempPercent = Math.max(
                               0,
                               Math.min(100, item.metrics.temperature),
                             );
-                            const temperaturePalette = getTemperaturePalette(item.metrics.temperature);
-                            const tempColor = getTemperatureColor(item.metrics.temperature);
+                            const temperaturePalette = getTemperaturePalette(
+                              item.metrics.temperature,
+                            );
+                            const tempColor = getTemperatureColor(
+                              item.metrics.temperature,
+                            );
                             const socFillHeight = Math.max(2, (soc / 100) * 58);
-                            const tempFillHeight = Math.max(2, (tempPercent / 100) * 58);
+                            const tempFillHeight = Math.max(
+                              2,
+                              (tempPercent / 100) * 58,
+                            );
                             return (
                               <div
                                 key={`cabinet-metrics-${index + 1}`}
@@ -2268,7 +2465,14 @@ export default function SiteTopology2D({
                                     role="img"
                                     aria-label={`储能电柜E${index + 1} 电量${soc}% 温度${item.metrics.temperature}度`}
                                   >
-                                    <rect x="20" y="2" width="12" height="6" rx="2" fill="#cbd5e1" />
+                                    <rect
+                                      x="20"
+                                      y="2"
+                                      width="12"
+                                      height="6"
+                                      rx="2"
+                                      fill="#cbd5e1"
+                                    />
                                     <rect
                                       x="8"
                                       y="8"
@@ -2279,7 +2483,14 @@ export default function SiteTopology2D({
                                       stroke="rgba(148,163,184,0.9)"
                                       strokeWidth="1.4"
                                     />
-                                    <rect x="12" y="12" width="24" height="58" rx="4" fill="rgba(241,245,249,0.9)" />
+                                    <rect
+                                      x="12"
+                                      y="12"
+                                      width="24"
+                                      height="58"
+                                      rx="4"
+                                      fill="rgba(241,245,249,0.9)"
+                                    />
                                     <rect
                                       x="12"
                                       y={70 - socFillHeight}
@@ -2289,7 +2500,14 @@ export default function SiteTopology2D({
                                       fill={tempColor}
                                       opacity="0.9"
                                     />
-                                    <rect x="38" y="12" width="4" height="58" rx="2" fill="rgba(226,232,240,0.9)" />
+                                    <rect
+                                      x="38"
+                                      y="12"
+                                      width="4"
+                                      height="58"
+                                      rx="2"
+                                      fill="rgba(226,232,240,0.9)"
+                                    />
                                     <rect
                                       x="38"
                                       y={70 - tempFillHeight}
@@ -2298,13 +2516,22 @@ export default function SiteTopology2D({
                                       rx="2"
                                       fill={tempColor}
                                     />
-                                    <text x="26" y="45" textAnchor="middle" fontSize="8" fill="#0f172a" fontWeight="700">
+                                    <text
+                                      x="26"
+                                      y="45"
+                                      textAnchor="middle"
+                                      fontSize="8"
+                                      fill="#0f172a"
+                                      fontWeight="700"
+                                    >
                                       {soc}%
                                     </text>
                                   </svg>
                                 </div>
                                 <div className="mt-0.5 text-center text-[9px] text-slate-600">
-                                  <span className="font-semibold text-slate-700">E{index + 1}</span>
+                                  <span className="font-semibold text-slate-700">
+                                    E{index + 1}
+                                  </span>
                                   <span className="ml-1">SOC {soc}%</span>
                                 </div>
                                 <div className="mt-0.5 text-center text-[9px]">
@@ -2344,14 +2571,24 @@ export default function SiteTopology2D({
             <section
               className={`min-h-0 overflow-hidden rounded-2xl border p-2.5 xl:col-span-3 xl:row-span-1 ${pageTheme.panel} ${pageTheme.panelShadow}`}
             >
-              <p className={`px-1 pb-1 text-xs font-semibold tracking-[0.08em] uppercase ${pageTheme.accent}`}>
+              <p
+                className={`px-1 pb-1 text-xs font-semibold tracking-[0.08em] uppercase ${pageTheme.accent}`}
+              >
                 储能与负载
               </p>
               <div className="grid h-[600px] min-h-0 grid-rows-3 gap-2 xl:h-full">
                 {rightCharts.map((item) => (
-                  <div key={item.title} className="min-h-0 overflow-hidden rounded-xl border border-white/70 bg-white/65 p-2">
-                    <p className="px-1 text-[11px] font-semibold text-slate-600">{item.title}</p>
-                    <HighchartsReact highcharts={Highcharts} options={item.options} />
+                  <div
+                    key={item.title}
+                    className="min-h-0 overflow-hidden rounded-xl border border-white/70 bg-white/65 p-2"
+                  >
+                    <p className="px-1 text-[11px] font-semibold text-slate-600">
+                      {item.title}
+                    </p>
+                    <HighchartsReact
+                      highcharts={Highcharts}
+                      options={item.options}
+                    />
                   </div>
                 ))}
               </div>
@@ -2360,14 +2597,24 @@ export default function SiteTopology2D({
             <section
               className={`min-h-0 overflow-hidden rounded-2xl border p-2.5 xl:col-span-12 xl:row-span-1 ${pageTheme.panel} ${pageTheme.panelShadow}`}
             >
-              <p className={`px-1 pb-1 text-xs font-semibold tracking-[0.08em] uppercase ${pageTheme.accent}`}>
+              <p
+                className={`px-1 pb-1 text-xs font-semibold tracking-[0.08em] uppercase ${pageTheme.accent}`}
+              >
                 设备运行与运维
               </p>
               <div className="grid h-full grid-cols-1 gap-2 lg:grid-cols-3">
                 {bottomCharts.map((item) => (
-                  <div key={item.title} className="min-h-0 overflow-hidden rounded-xl border border-white/70 bg-white/65 p-2">
-                    <p className="px-1 text-[11px] font-semibold text-slate-600">{item.title}</p>
-                    <HighchartsReact highcharts={Highcharts} options={item.options} />
+                  <div
+                    key={item.title}
+                    className="min-h-0 overflow-hidden rounded-xl border border-white/70 bg-white/65 p-2"
+                  >
+                    <p className="px-1 text-[11px] font-semibold text-slate-600">
+                      {item.title}
+                    </p>
+                    <HighchartsReact
+                      highcharts={Highcharts}
+                      options={item.options}
+                    />
                   </div>
                 ))}
               </div>

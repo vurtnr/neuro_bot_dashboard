@@ -26,29 +26,11 @@ export type RobotInspectionEvent = {
   targetAngle?: number;
 };
 
-export type RobotPatrolEventType =
-  | "patrol_started"
-  | "patrol_announcing"
-  | "target_locked"
-  | "patrol_cancelled"
-  | "patrol_completed"
-  | "patrol_failed";
-
 export type PatrolLockedDevice = {
   nodeId: string;
   nodeLabel: string;
   nodeType: string;
   deviceCategory: string;
-};
-
-export type RobotPatrolEvent = {
-  requestId: string;
-  sequence: number;
-  event: RobotPatrolEventType;
-  success?: boolean;
-  reason?: string;
-  message?: string;
-  device?: PatrolLockedDevice;
 };
 
 export type StartInspectionPayload = {
@@ -60,28 +42,6 @@ export type StartInspectionPayload = {
 
 export type StartInspectionResponse = {
   accepted: boolean;
-  message: string;
-  requestId?: string;
-};
-
-export type StartPatrolPayload = {
-  requestId: string;
-  siteId: string;
-};
-
-export type StartPatrolResponse = {
-  accepted: boolean;
-  message: string;
-  requestId?: string;
-  activeRequestId?: string;
-};
-
-export type StopPatrolPayload = {
-  requestId: string;
-};
-
-export type StopPatrolResponse = {
-  success: boolean;
   message: string;
   requestId?: string;
 };

@@ -1,0 +1,1 @@
+window.__ROBOT_DASHBOARD_RUNTIME_CONFIG__ = {};
