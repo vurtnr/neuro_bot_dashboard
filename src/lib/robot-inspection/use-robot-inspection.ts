@@ -58,6 +58,11 @@ export type InspectionDialogState =
       requestId: string;
     };
 
+export type RetryableInspectionRequest = {
+  payload: Omit<StartInspectionPayload, "requestId">;
+  onSuccess: (event: RobotInspectionEvent) => void;
+};
+
 type DialogInspectionEventType =
   | "accepted"
   | "permission_prompting"
@@ -283,13 +288,37 @@ export function reduceInspectionDialogState(
   };
 }
 
+export function canRetryInspectionRequest(
+  dialogState: InspectionDialogState,
+  request: RetryableInspectionRequest | null,
+) {
+  return (
+    request !== null &&
+    dialogState.open &&
+    dialogState.phase === "permission_denied"
+  );
+}
+
+export async function retryStoredInspectionRequest(
+  dialogState: InspectionDialogState,
+  request: RetryableInspectionRequest | null,
+  beginInspection: (
+    payload: Omit<StartInspectionPayload, "requestId">,
+    onSuccess: (event: RobotInspectionEvent) => void,
+  ) => Promise<void>,
+) {
+  if (!canRetryInspectionRequest(dialogState, request)) {
+    return false;
+  }
+
+  await beginInspection(request.payload, request.onSuccess);
+  return true;
+}
+
 export function useRobotInspection() {
   const eventSourceRef = useRef<EventSource | null>(null);
   const timeoutRef = useRef<number | null>(null);
-  const lastRequestRef = useRef<{
-    payload: Omit<StartInspectionPayload, "requestId">;
-    onSuccess: (event: RobotInspectionEvent) => void;
-  } | null>(null);
+  const lastRequestRef = useRef<RetryableInspectionRequest | null>(null);
   const [dialogState, setDialogState] =
     useState<InspectionDialogState>(INITIAL_STATE);
 
@@ -308,6 +337,7 @@ export function useRobotInspection() {
 
   const closeDialog = useCallback(() => {
     cleanup();
+    lastRequestRef.current = null;
     setDialogState(INITIAL_STATE);
   }, [cleanup]);
 
@@ -346,14 +376,22 @@ export function useRobotInspection() {
           (event) => {
             if (event.event === "success") {
               cleanup();
+              lastRequestRef.current = null;
               setDialogState(INITIAL_STATE);
               onSuccess(event);
               return;
             }
 
-            setDialogState((current) =>
-              reduceInspectionDialogState(current, event),
-            );
+            setDialogState((current) => {
+              const nextState = reduceInspectionDialogState(current, event);
+              if (
+                nextState.open &&
+                nextState.phase === "permission_unresolved"
+              ) {
+                lastRequestRef.current = null;
+              }
+              return nextState;
+            });
           },
           () => {
             // Let the global timeout handle transient EventSource reconnects.
@@ -380,13 +418,12 @@ export function useRobotInspection() {
   );
 
   const retryPermission = useCallback(async () => {
-    const lastRequest = lastRequestRef.current;
-    if (!lastRequest) {
-      return;
-    }
-
-    await beginInspection(lastRequest.payload, lastRequest.onSuccess);
-  }, [beginInspection]);
+    await retryStoredInspectionRequest(
+      dialogState,
+      lastRequestRef.current,
+      beginInspection,
+    );
+  }, [beginInspection, dialogState]);
 
   return {
     beginInspection,

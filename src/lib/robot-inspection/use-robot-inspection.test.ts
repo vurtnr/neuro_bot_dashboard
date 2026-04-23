@@ -3,8 +3,11 @@ import test from "node:test";
 
 import {
   INITIAL_STATE,
+  canRetryInspectionRequest,
   reduceInspectionDialogState,
+  retryStoredInspectionRequest,
   type InspectionDialogState,
+  type RetryableInspectionRequest,
 } from "./use-robot-inspection";
 import type { RobotInspectionEvent } from "./types";
 
@@ -15,6 +18,25 @@ const baseState: InspectionDialogState = {
   detail: "请等待机器人语音询问用户是否可以获取该设备数据。",
   requestId: "req-1",
 };
+
+const deniedState: InspectionDialogState = {
+  open: true,
+  phase: "permission_denied",
+  message: "用户已明确拒绝本次设备数据获取请求。",
+  detail: "你可以结束本次复核，或重新请求机器人进行语音确认。",
+  requestId: "req-denied",
+};
+
+function createStoredRequest(): RetryableInspectionRequest {
+  return {
+    payload: {
+      siteId: "site-1",
+      nodeId: "node-1",
+      nodeLabel: "设备 1",
+    },
+    onSuccess: () => {},
+  };
+}
 
 test("transitions from permission phases into scan phases only after consent", () => {
   const prompting = reduceInspectionDialogState(baseState, {
@@ -142,12 +164,6 @@ test("rejects scan events while idle", () => {
 });
 
 test("rejects further dialog transitions after permission_denied", () => {
-  const deniedState = reduceInspectionDialogState(baseState, {
-    requestId: "req-denied",
-    event: "permission_denied",
-    reason: "user_refused",
-  } satisfies RobotInspectionEvent);
-
   const rejected = reduceInspectionDialogState(deniedState, {
     requestId: "req-after-denied",
     event: "waiting_for_qr",
@@ -192,4 +208,91 @@ test("rejects invalid later-phase jumps inside the scan flow", () => {
   assert.equal(jumped.message, "请等待机器人进行设备识别。");
   assert.equal(jumped.detail, "已获得语音授权，正在进入二维码扫描流程。");
   assert.equal(jumped.requestId, "req-qr");
+});
+
+test("retry with no stored request does nothing", async () => {
+  let callCount = 0;
+
+  const retried = await retryStoredInspectionRequest(
+    deniedState,
+    null,
+    async () => {
+      callCount += 1;
+    },
+  );
+
+  assert.equal(retried, false);
+  assert.equal(callCount, 0);
+  assert.equal(canRetryInspectionRequest(deniedState, null), false);
+});
+
+test("retry after close does nothing", async () => {
+  let callCount = 0;
+  const storedRequest = createStoredRequest();
+
+  const retried = await retryStoredInspectionRequest(
+    INITIAL_STATE,
+    storedRequest,
+    async () => {
+      callCount += 1;
+    },
+  );
+
+  assert.equal(retried, false);
+  assert.equal(callCount, 0);
+  assert.equal(canRetryInspectionRequest(INITIAL_STATE, storedRequest), false);
+});
+
+test("retry after success does nothing", async () => {
+  let callCount = 0;
+  const storedRequest = createStoredRequest();
+  const successState = reduceInspectionDialogState(deniedState, {
+    requestId: "req-success",
+    event: "success",
+  } satisfies RobotInspectionEvent);
+
+  const retried = await retryStoredInspectionRequest(
+    successState,
+    storedRequest,
+    async () => {
+      callCount += 1;
+    },
+  );
+
+  assert.equal(retried, false);
+  assert.equal(callCount, 0);
+  assert.deepEqual(successState, INITIAL_STATE);
+});
+
+test("retry in denied state replays the stored request through beginInspection", async () => {
+  const storedRequest = createStoredRequest();
+  const seenPayloads: RetryableInspectionRequest["payload"][] = [];
+  const seenCallbacks: RetryableInspectionRequest["onSuccess"][] = [];
+  const generatedRequestIds = ["retry-req-1", "retry-req-2"];
+
+  let beginCallCount = 0;
+  const retried = await retryStoredInspectionRequest(
+    deniedState,
+    storedRequest,
+    async (payload, onSuccess) => {
+      seenPayloads.push(payload);
+      seenCallbacks.push(onSuccess);
+      const nextRequestId = generatedRequestIds[beginCallCount];
+      beginCallCount += 1;
+
+      const startState = reduceInspectionDialogState(INITIAL_STATE, {
+        requestId: nextRequestId,
+        event: "accepted",
+      } satisfies RobotInspectionEvent);
+
+      assert.equal(startState.phase, "requesting_permission");
+      assert.equal(startState.requestId, nextRequestId);
+    },
+  );
+
+  assert.equal(retried, true);
+  assert.equal(beginCallCount, 1);
+  assert.deepEqual(seenPayloads, [storedRequest.payload]);
+  assert.deepEqual(seenCallbacks, [storedRequest.onSuccess]);
+  assert.equal(canRetryInspectionRequest(deniedState, storedRequest), true);
 });
