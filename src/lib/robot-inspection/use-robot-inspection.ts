@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { startInspection, subscribeInspectionEvents } from "./client";
 import type {
   RobotInspectionEvent,
+  RobotInspectionEventType,
   StartInspectionPayload,
 } from "./types";
 
@@ -57,6 +58,19 @@ export type InspectionDialogState =
       requestId: string;
     };
 
+type DialogInspectionEventType =
+  | "accepted"
+  | "permission_prompting"
+  | "permission_listening"
+  | "permission_retrying"
+  | "permission_denied"
+  | "permission_unresolved"
+  | "waiting_for_qr"
+  | "qr_detected"
+  | "ble_connecting"
+  | "querying_device"
+  | "failed";
+
 export const INITIAL_STATE: InspectionDialogState = {
   open: false,
   phase: "idle",
@@ -75,7 +89,38 @@ function buildFailureMessage(event?: RobotInspectionEvent, fallback?: string): s
   return event?.message || fallback || "识别失败，请重试。";
 }
 
-function buildDialogCopy(event: RobotInspectionEvent): {
+function isDialogEventType(
+  eventType: RobotInspectionEventType,
+): eventType is DialogInspectionEventType {
+  switch (eventType) {
+    case "accepted":
+    case "permission_prompting":
+    case "permission_listening":
+    case "permission_retrying":
+    case "permission_denied":
+    case "permission_unresolved":
+    case "waiting_for_qr":
+    case "qr_detected":
+    case "ble_connecting":
+    case "querying_device":
+    case "failed":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function isDialogEvent(
+  event: RobotInspectionEvent,
+): event is RobotInspectionEvent & { event: DialogInspectionEventType } {
+  return isDialogEventType(event.event);
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled inspection dialog event: ${value}`);
+}
+
+function buildDialogCopy(event: RobotInspectionEvent & { event: DialogInspectionEventType }): {
   phase: InspectionDialogPhase;
   message: string;
   detail: string;
@@ -136,12 +181,79 @@ function buildDialogCopy(event: RobotInspectionEvent): {
         message: "正在查询设备状态，请稍候。",
         detail: "机器人正在读取异常设备数据。",
       };
-    default:
+    case "failed":
       return {
         phase: "failed",
         message: buildFailureMessage(event),
         detail: "你可以关闭弹框后重新点击带工单角标的设备节点。",
       };
+    default:
+      return assertNever(event.event);
+  }
+}
+
+function isAllowedTransition(
+  current: InspectionDialogState,
+  nextEvent: DialogInspectionEventType,
+) {
+  if (!current.open) {
+    return nextEvent === "accepted" || nextEvent === "permission_prompting";
+  }
+
+  switch (current.phase) {
+    case "requesting_permission":
+      return (
+        nextEvent === "accepted" ||
+        nextEvent === "permission_prompting" ||
+        nextEvent === "permission_listening" ||
+        nextEvent === "permission_retrying" ||
+        nextEvent === "permission_denied" ||
+        nextEvent === "permission_unresolved" ||
+        nextEvent === "waiting_for_qr" ||
+        nextEvent === "failed"
+      );
+    case "awaiting_permission_response":
+      return (
+        nextEvent === "permission_listening" ||
+        nextEvent === "permission_retrying" ||
+        nextEvent === "permission_denied" ||
+        nextEvent === "permission_unresolved" ||
+        nextEvent === "waiting_for_qr" ||
+        nextEvent === "failed"
+      );
+    case "retrying_permission":
+      return (
+        nextEvent === "permission_prompting" ||
+        nextEvent === "permission_listening" ||
+        nextEvent === "permission_denied" ||
+        nextEvent === "permission_unresolved" ||
+        nextEvent === "waiting_for_qr" ||
+        nextEvent === "failed"
+      );
+    case "permission_denied":
+    case "permission_unresolved":
+      return nextEvent === "failed";
+    case "waiting_for_qr":
+      return (
+        nextEvent === "waiting_for_qr" ||
+        nextEvent === "qr_detected" ||
+        nextEvent === "failed"
+      );
+    case "qr_detected":
+      return (
+        nextEvent === "qr_detected" ||
+        nextEvent === "ble_connecting" ||
+        nextEvent === "failed"
+      );
+    case "ble_connecting":
+      return (
+        nextEvent === "ble_connecting" ||
+        nextEvent === "querying_device" ||
+        nextEvent === "failed"
+      );
+    case "querying_device":
+    case "failed":
+      return nextEvent === "failed";
   }
 }
 
@@ -153,15 +265,12 @@ export function reduceInspectionDialogState(
     return INITIAL_STATE;
   }
 
-  if (event.event === "failed") {
-    const copy = buildDialogCopy(event);
-    return {
-      open: true,
-      phase: copy.phase,
-      message: copy.message,
-      detail: copy.detail,
-      requestId: event.requestId,
-    };
+  if (!isDialogEvent(event)) {
+    return current;
+  }
+
+  if (!isAllowedTransition(current, event.event)) {
+    return current;
   }
 
   const copy = buildDialogCopy(event);
