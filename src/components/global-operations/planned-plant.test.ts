@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  buildPlannedPlantMetrics,
   buildPlannedPlantRedirectUrl,
   createPlannedPlantFromPayload,
   getPlannedPlantRegionLabel,
+  mergePinnedPlannedPlants,
+  PINNED_PLANNED_PLANTS,
+  toPlannedPlantFeatureCollection,
   upsertPlannedPlant,
   type PlannedPlant,
 } from "./planned-plant";
@@ -102,20 +104,26 @@ test("formats the planned plant location line for the popup header", () => {
   assert.equal(label, "中国  青海 · 共和县");
 });
 
-test("builds the redesigned metric set for the planning popup", () => {
-  const metrics = buildPlannedPlantMetrics({
-    plantId: "plant-42",
-    lng: 100.42,
-    lat: 36.17,
-    name: "Qinghai/gonghexian",
-    country: "中国",
-    province: "青海",
-    city: "共和县",
-  });
+test("merges the pinned planned plant into the homepage list", () => {
+  const merged = mergePinnedPlannedPlants([
+    {
+      plantId: "plant-42",
+      lng: 100.42,
+      lat: 36.17,
+      name: "Qinghai/gonghexian",
+      country: "中国",
+      province: "青海",
+      city: "共和县",
+    },
+  ]);
 
-  assert.deepEqual(
-    metrics.map((metric) => metric.label),
-    ["装机容量", "预计实时功率", "环境温度", "辐照强度"],
-  );
-  assert.equal(metrics.length, 4);
+  assert.equal(merged.length, 2);
+  assert.deepEqual(merged[0], PINNED_PLANNED_PLANTS[0]);
+  assert.equal(merged[1]?.plantId, "plant-42");
+});
+
+test("adds the planned tag label into the feature collection", () => {
+  const collection = toPlannedPlantFeatureCollection(PINNED_PLANNED_PLANTS);
+
+  assert.equal(collection.features[0]?.properties.tagLabel, "规划中");
 });

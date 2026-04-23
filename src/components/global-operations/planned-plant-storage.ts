@@ -1,6 +1,6 @@
 "use client";
 
-import type { PlannedPlant } from "./planned-plant";
+import { mergePinnedPlannedPlants, type PlannedPlant } from "./planned-plant";
 
 const STORAGE_KEY = "robot-dashboard:planned-plants";
 
@@ -31,18 +31,20 @@ export function sanitizeStoredPlannedPlants(value: unknown): PlannedPlant[] {
 
 export function readPlannedPlants(): PlannedPlant[] {
   if (typeof window === "undefined") {
-    return [];
+    return mergePinnedPlannedPlants([]);
   }
 
   try {
     const rawValue = window.localStorage.getItem(STORAGE_KEY);
     if (!rawValue) {
-      return [];
+      return mergePinnedPlannedPlants([]);
     }
 
-    return sanitizeStoredPlannedPlants(JSON.parse(rawValue));
+    return mergePinnedPlannedPlants(
+      sanitizeStoredPlannedPlants(JSON.parse(rawValue)),
+    );
   } catch {
-    return [];
+    return mergePinnedPlannedPlants([]);
   }
 }
 
@@ -51,5 +53,8 @@ export function writePlannedPlants(plants: PlannedPlant[]) {
     return;
   }
 
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(plants));
+  window.localStorage.setItem(
+    STORAGE_KEY,
+    JSON.stringify(mergePinnedPlannedPlants(plants)),
+  );
 }

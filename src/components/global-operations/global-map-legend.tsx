@@ -23,6 +23,12 @@ const legendItems = [
     tone: "bg-slate-400 shadow-[0_0_14px_rgba(148,163,184,0.55)]",
     getValue: (summary: GlobalSummary) => summary.unconnectedCount,
   },
+  {
+    key: "planned",
+    label: "规划中",
+    tone: "bg-emerald-300 shadow-[0_0_14px_rgba(110,231,183,0.85)]",
+    getValue: (summary: GlobalSummary) => summary.plannedSiteCount,
+  },
 ] as const;
 
 export function GlobalMapLegend({ summary }: GlobalMapLegendProps) {

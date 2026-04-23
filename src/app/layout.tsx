@@ -16,7 +16,7 @@ export default function RootLayout({
   return (
     <html lang="zh-CN">
       <body className="antialiased">
-        <Script src="/runtime-config.js" strategy="beforeInteractive" />
+        <Script src="/api/runtime-config" strategy="beforeInteractive" />
         {children}
       </body>
     </html>

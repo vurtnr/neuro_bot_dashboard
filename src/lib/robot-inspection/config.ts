@@ -4,18 +4,20 @@ declare global {
   }
 }
 
-const BUILD_TIME_PUBLIC_CONFIG = {
+export const BUILD_TIME_PUBLIC_CONFIG = {
   NEXT_PUBLIC_ROBOT_BASE_URL: process.env.NEXT_PUBLIC_ROBOT_BASE_URL ?? "",
   NEXT_PUBLIC_ROBOT_VIDEO_BASE_URL:
     process.env.NEXT_PUBLIC_ROBOT_VIDEO_BASE_URL ?? "",
   NEXT_PUBLIC_PLANT_CREATED_WS_URL:
     process.env.NEXT_PUBLIC_PLANT_CREATED_WS_URL ?? "",
+  NEXT_PUBLIC_BATTERY_WS_URL: process.env.NEXT_PUBLIC_BATTERY_WS_URL ?? "",
   NEXT_PUBLIC_TIANDITU_KEY: process.env.NEXT_PUBLIC_TIANDITU_KEY ?? "",
 } as const;
 
-function readPublicConfig(
-  key: keyof typeof BUILD_TIME_PUBLIC_CONFIG,
-): string {
+export type PublicConfigKey = keyof typeof BUILD_TIME_PUBLIC_CONFIG;
+export type PublicConfig = Record<PublicConfigKey, string>;
+
+export function readPublicConfig(key: PublicConfigKey): string {
   if (typeof window !== "undefined") {
     const runtimeValue = window.__ROBOT_DASHBOARD_RUNTIME_CONFIG__?.[key]?.trim();
     if (runtimeValue) {
@@ -34,6 +36,10 @@ export function hasRobotBaseUrl(): boolean {
   return getRobotBaseUrl().length > 0;
 }
 
+export function getTiandituKey(): string {
+  return readPublicConfig("NEXT_PUBLIC_TIANDITU_KEY");
+}
+
 export function getPlantCreatedWebSocketUrl(): string {
   const explicit = readPublicConfig("NEXT_PUBLIC_PLANT_CREATED_WS_URL");
   if (!explicit) {
@@ -43,6 +49,15 @@ export function getPlantCreatedWebSocketUrl(): string {
   return explicit.startsWith("ws://") || explicit.startsWith("wss://")
     ? explicit
     : "";
+}
+
+export function getBatteryWebSocketUrl(): string {
+  const explicit = readPublicConfig("NEXT_PUBLIC_BATTERY_WS_URL");
+  if (explicit.startsWith("ws://") || explicit.startsWith("wss://")) {
+    return explicit;
+  }
+
+  return "ws://172.22.3.105:3000/ws";
 }
 
 export function getRobotVideoBaseUrl(): string {

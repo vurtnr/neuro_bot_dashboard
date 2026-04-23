@@ -29,14 +29,26 @@ export type PlannedPlantFeatureCollection = {
     properties: {
       plantId: string;
       name: string;
+      tagLabel: string;
     };
   }>;
 };
 
-export type PlannedPlantMetric = {
-  label: string;
-  value: string;
-};
+export const PINNED_PLANNED_PLANTS: PlannedPlant[] = [
+  {
+    plantId: "303342051150270464",
+    lng: 116.397583,
+    lat: 39.907806,
+    name: "集中式光伏上网电站",
+    country: "中国",
+    province: "河北省",
+    city: "石家市",
+  },
+];
+
+const PINNED_PLANNED_PLANT_IDS = new Set(
+  PINNED_PLANNED_PLANTS.map((plant) => plant.plantId),
+);
 
 function parseCoordinate(value: number | string | undefined): number | null {
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -89,6 +101,14 @@ export function upsertPlannedPlant(
   return [...next, incoming];
 }
 
+export function mergePinnedPlannedPlants(plants: PlannedPlant[]) {
+  const dynamicPlants = plants.filter(
+    (plant) => !PINNED_PLANNED_PLANT_IDS.has(plant.plantId),
+  );
+
+  return [...PINNED_PLANNED_PLANTS, ...dynamicPlants];
+}
+
 export function buildPlannedPlantRedirectUrl(plantId: string) {
   return `http://10.180.40.166/#/workspace/info/home?workflowId=${plantId}&tab=forward`;
 }
@@ -111,43 +131,8 @@ export function toPlannedPlantFeatureCollection(
       properties: {
         plantId: plant.plantId,
         name: plant.name,
+        tagLabel: "规划中",
       },
     })),
   };
-}
-
-function deriveSeed(plannedPlant: PlannedPlant) {
-  return Array.from(plannedPlant.plantId).reduce(
-    (sum, char, index) => sum + char.charCodeAt(0) * (index + 1),
-    0,
-  );
-}
-
-export function buildPlannedPlantMetrics(
-  plannedPlant: PlannedPlant,
-): PlannedPlantMetric[] {
-  const seed = deriveSeed(plannedPlant);
-  const capacity = 28 + (seed % 15);
-  const projectedPower = (capacity * (0.63 + ((seed % 18) / 100))).toFixed(1);
-  const temperature = (16 + ((seed % 35) / 10)).toFixed(1);
-  const irradiance = 760 + (seed % 120);
-
-  return [
-    {
-      label: "装机容量",
-      value: `${capacity} MW`,
-    },
-    {
-      label: "预计实时功率",
-      value: `${projectedPower} MW`,
-    },
-    {
-      label: "环境温度",
-      value: `${temperature} °C`,
-    },
-    {
-      label: "辐照强度",
-      value: `${irradiance} W/m²`,
-    },
-  ];
 }

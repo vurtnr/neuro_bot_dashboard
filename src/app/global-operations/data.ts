@@ -621,9 +621,13 @@ export type GlobalSummary = {
   totalCapacityMw: number;
   warningCount: number;
   unconnectedCount: number;
+  plannedSiteCount: number;
 };
 
-export function getGlobalSummary(points: GlobalSitePoint[]): GlobalSummary {
+export function getGlobalSummary(
+  points: GlobalSitePoint[],
+  plannedSiteCount = 0,
+): GlobalSummary {
   const totalSites = points.length;
   const connectedSites = points.filter((point) => point.connected).length;
   const onlineRate = totalSites === 0 ? 0 : (connectedSites / totalSites) * 100;
@@ -640,6 +644,7 @@ export function getGlobalSummary(points: GlobalSitePoint[]): GlobalSummary {
     totalCapacityMw,
     warningCount,
     unconnectedCount,
+    plannedSiteCount,
   };
 }
 

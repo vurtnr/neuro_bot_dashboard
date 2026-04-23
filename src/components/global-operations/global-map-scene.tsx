@@ -16,6 +16,10 @@ import {
   type GlobalSitePoint,
 } from "@/app/global-operations/data";
 import {
+  AbnormalWorkOrderCard,
+  type AbnormalWorkOrderStatus,
+} from "@/components/global-operations/abnormal-work-order-card";
+import {
   type PlannedPlant,
   toPlannedPlantFeatureCollection,
 } from "@/components/global-operations/planned-plant";
@@ -24,15 +28,18 @@ import {
   type PopupLayout,
 } from "@/components/global-operations/planned-plant-popup-layout";
 import { PlannedPlantPopup } from "@/components/global-operations/planned-plant-popup";
+import { getTiandituKey } from "@/lib/robot-inspection/config";
 
 type GlobalMapSceneProps = {
   points: GlobalSitePoint[];
   plannedPlants?: PlannedPlant[];
   anomalySiteId?: string | null;
   inspectionBusy?: boolean;
+  abnormalWorkOrderStatus?: AbnormalWorkOrderStatus;
   onStartInspection?: (site: GlobalSitePoint) => void;
   onOpenAnomalyReview?: (site: GlobalSitePoint) => void;
   onOpenSiteDetail?: (site: GlobalSitePoint) => void;
+  onRequestTechnicalSupport?: () => void;
 };
 
 type MapStatus = "loading" | "ready" | "failed";
@@ -81,10 +88,9 @@ const MERCATOR_MAX_ZOOM = 4.8;
 const LIGHT_SCENE_BACKGROUND = "#dff1ff";
 const GLOBE_SCENE_BACKGROUND = "rgba(0, 0, 0, 0)";
 const PANEL_WIDTH = 560;
-const PANEL_HEIGHT = 236;
-const TIANDITU_KEY =
-  process.env.NEXT_PUBLIC_TIANDITU_KEY ??
-  "c0cf6d9f223c83540c8b52d1faaf7bae";
+const PANEL_HEIGHT = 320;
+const DEFAULT_TIANDITU_KEY = "c0cf6d9f223c83540c8b52d1faaf7bae";
+const TIANDITU_KEY = getTiandituKey() || DEFAULT_TIANDITU_KEY;
 const TIANDITU_IMAGE_TILES = [
   `https://t0.tianditu.gov.cn/img_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=img&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${TIANDITU_KEY}`,
   `https://t1.tianditu.gov.cn/img_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=img&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${TIANDITU_KEY}`,
@@ -652,9 +658,11 @@ export function GlobalMapScene({
   plannedPlants = [],
   anomalySiteId = null,
   inspectionBusy = false,
+  abnormalWorkOrderStatus = "idle",
   onStartInspection,
   onOpenAnomalyReview,
   onOpenSiteDetail,
+  onRequestTechnicalSupport,
 }: GlobalMapSceneProps) {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -725,6 +733,12 @@ export function GlobalMapScene({
     latestPlannedPlantFeatureCollectionRef.current = plannedPlantFeatureCollection;
   }, [plannedPlantFeatureCollection]);
 
+  const plannedPlantByIdRef = useRef(plannedPlantById);
+
+  useEffect(() => {
+    plannedPlantByIdRef.current = plannedPlantById;
+  }, [plannedPlantById]);
+
   useEffect(() => {
     latestViewModeRef.current = viewMode;
   }, [viewMode]);
@@ -740,6 +754,34 @@ export function GlobalMapScene({
   useEffect(() => {
     anomalySiteRef.current = anomalySite;
   }, [anomalySite]);
+
+  const openPlannedPlantPopup = useCallback(
+    (plantId: string, anchorX?: number, anchorY?: number) => {
+      const map = mapRef.current;
+      const container = mapContainerRef.current;
+      const plant = plannedPlantByIdRef.current.get(plantId);
+
+      if (!map || !container || !plant) {
+        return;
+      }
+
+      const projected = map.project([plant.lng, plant.lat]);
+
+      setPopupLayout(
+        resolveAnchoredPopupLayout({
+          anchorX: anchorX ?? projected.x,
+          anchorY: anchorY ?? projected.y,
+          containerWidth: container.clientWidth,
+          containerHeight: container.clientHeight,
+          panelWidth: PANEL_WIDTH,
+          panelHeight: PANEL_HEIGHT,
+        }),
+      );
+      setSelectedSiteId(null);
+      setSelectedPlannedPlantId(plantId);
+    },
+    [],
+  );
 
   const updatePopupLayout = useCallback(() => {
     const map = mapRef.current;
@@ -911,18 +953,7 @@ export function GlobalMapScene({
         return;
       }
 
-      setPopupLayout(
-        resolveAnchoredPopupLayout({
-          anchorX: event.point.x,
-          anchorY: event.point.y,
-          containerWidth: map.getContainer().clientWidth,
-          containerHeight: map.getContainer().clientHeight,
-          panelWidth: PANEL_WIDTH,
-          panelHeight: PANEL_HEIGHT,
-        }),
-      );
-      setSelectedSiteId(null);
-      setSelectedPlannedPlantId(plantId);
+      openPlannedPlantPopup(plantId, event.point.x, event.point.y);
     };
 
     const handleMove = () => {
@@ -1009,7 +1040,7 @@ export function GlobalMapScene({
       map.remove();
       mapRef.current = null;
     };
-  }, []);
+  }, [openPlannedPlantPopup]);
 
   return (
     <div
@@ -1075,6 +1106,13 @@ export function GlobalMapScene({
       </div>
 
       <div className="relative z-10 h-full min-h-[620px] w-full" ref={mapContainerRef} />
+
+      <div className="pointer-events-none absolute top-24 right-5 z-30">
+        <AbnormalWorkOrderCard
+          status={abnormalWorkOrderStatus}
+          onRequestSupport={() => onRequestTechnicalSupport?.()}
+        />
+      </div>
 
       {selectedPlannedPlant && popupLayout ? (
         <div

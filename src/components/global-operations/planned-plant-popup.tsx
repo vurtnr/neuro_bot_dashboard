@@ -1,9 +1,7 @@
 "use client";
 
 import {
-  buildPlannedPlantMetrics,
   buildPlannedPlantRedirectUrl,
-  getPlannedPlantRegionLabel,
   type PlannedPlant,
 } from "./planned-plant";
 
@@ -12,7 +10,11 @@ type PlannedPlantPopupProps = {
   onClose: () => void;
 };
 
-function MetricItem({ label, value }: { label: string; value: string }) {
+function formatCoordinate(value: number) {
+  return value.toFixed(6);
+}
+
+function CoordinateCard({ label, value }: { label: string; value: string }) {
   return (
     <div className="global-site-popup-metric">
       <span className="global-site-popup-metric-label">{label}</span>
@@ -26,23 +28,20 @@ export function PlannedPlantPopup({
   onClose,
 }: PlannedPlantPopupProps) {
   const planningUrl = buildPlannedPlantRedirectUrl(plannedPlant.plantId);
-  const metrics = buildPlannedPlantMetrics(plannedPlant);
+  const regionLine = `${plannedPlant.country} · ${plannedPlant.province} · ${plannedPlant.city}`;
+  const locationBlock = `${plannedPlant.country} / ${plannedPlant.province} / ${plannedPlant.city}`;
 
   return (
-    <div className="global-site-popup-card">
+    <div className="global-site-popup-card planned-plant-popup-card">
       <div className="global-site-popup-header">
         <div className="min-w-0">
-          <p className="global-site-popup-eyebrow">规划中新场站</p>
+          <p className="global-site-popup-eyebrow">Planned Site</p>
           <h3 className="global-site-popup-title">{plannedPlant.name}</h3>
-          <p className="global-site-popup-subtitle">
-            {getPlannedPlantRegionLabel(plannedPlant)}
-          </p>
+          <p className="global-site-popup-subtitle">{regionLine}</p>
         </div>
 
         <div className="global-site-popup-header-actions">
-          <span className="rounded-full bg-emerald-50 px-3 py-1 text-[11px] font-semibold text-emerald-700 ring-1 ring-emerald-100">
-            规划中
-          </span>
+          <span className="planned-plant-popup-status">规划中</span>
           <button
             type="button"
             onClick={onClose}
@@ -54,61 +53,40 @@ export function PlannedPlantPopup({
         </div>
       </div>
 
-      <div className="global-site-popup-content">
+      <div className="global-site-popup-content planned-plant-popup-content">
         <section className="global-site-popup-primary">
-          <div className="rounded-[20px] border border-emerald-100/80 bg-[linear-gradient(135deg,rgba(236,253,245,0.92),rgba(248,252,255,0.96))] px-4 py-3">
-            <p className="text-[11px] font-semibold tracking-[0.18em] text-emerald-700/80 uppercase">
-              Planning Queue
+          <div className="planned-plant-popup-summary">
+            <p className="planned-plant-popup-summary-label">
+              Planning Summary
             </p>
-            <p className="mt-2 text-sm font-medium text-slate-700">
-              来自实时建站推送
-            </p>
+            <p className="planned-plant-popup-summary-copy">规划中场站</p>
           </div>
 
-          <div className="mt-4 grid grid-cols-3 gap-3 text-sm text-slate-600">
-            <div className="rounded-2xl border border-slate-100/80 bg-white/70 px-3 py-3">
-              <p className="text-[11px] font-semibold tracking-[0.12em] text-slate-400 uppercase">
-                国家
-              </p>
-              <p className="mt-2 font-medium text-slate-700">
-                {plannedPlant.country}
-              </p>
-            </div>
-            <div className="rounded-2xl border border-slate-100/80 bg-white/70 px-3 py-3">
-              <p className="text-[11px] font-semibold tracking-[0.12em] text-slate-400 uppercase">
-                省份
-              </p>
-              <p className="mt-2 font-medium text-slate-700">
-                {plannedPlant.province}
-              </p>
-            </div>
-            <div className="rounded-2xl border border-slate-100/80 bg-white/70 px-3 py-3">
-              <p className="text-[11px] font-semibold tracking-[0.12em] text-slate-400 uppercase">
-                城市
-              </p>
-              <p className="mt-2 font-medium text-slate-700">
-                {plannedPlant.city}
-              </p>
-            </div>
+          <div className="planned-plant-popup-location">
+            <p className="planned-plant-popup-location-label">站点位置</p>
+            <p className="planned-plant-popup-location-value">
+              {locationBlock}
+            </p>
           </div>
         </section>
 
         <section className="global-site-popup-secondary">
-          <div className="global-site-popup-meta">
-            {metrics.map((metric) => (
-              <MetricItem
-                key={metric.label}
-                label={metric.label}
-                value={metric.value}
-              />
-            ))}
+          <div className="planned-plant-popup-coordinate-grid">
+            <CoordinateCard
+              label="经度"
+              value={formatCoordinate(plannedPlant.lng)}
+            />
+            <CoordinateCard
+              label="纬度"
+              value={formatCoordinate(plannedPlant.lat)}
+            />
           </div>
-          <div className="global-site-popup-secondary-actions">
+          <div className="planned-plant-popup-actions">
             <a
               href={planningUrl}
               target="_blank"
               rel="noreferrer"
-              className="global-site-popup-primary-action"
+              className="global-site-popup-primary-action planned-plant-popup-primary-action"
             >
               继续规划
             </a>

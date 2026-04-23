@@ -71,8 +71,8 @@ test("transitions from permission phases into scan phases only after consent", (
     event: "waiting_for_qr",
   } satisfies RobotInspectionEvent);
   assert.equal(qrWaiting.phase, "waiting_for_qr");
-  assert.equal(qrWaiting.message, "请等待机器人进行设备识别。");
-  assert.equal(qrWaiting.detail, "已获得语音授权，正在进入二维码扫描流程。");
+  assert.equal(qrWaiting.message, "已获得语音授权，可以进入扫码识别设备阶段。");
+  assert.equal(qrWaiting.detail, "请向机器人提供设备二维码图片，并保持在镜头范围内。");
   assert.equal(qrWaiting.requestId, "req-5");
 });
 
@@ -205,8 +205,8 @@ test("rejects invalid later-phase jumps inside the scan flow", () => {
   } satisfies RobotInspectionEvent);
 
   assert.equal(jumped.phase, "waiting_for_qr");
-  assert.equal(jumped.message, "请等待机器人进行设备识别。");
-  assert.equal(jumped.detail, "已获得语音授权，正在进入二维码扫描流程。");
+  assert.equal(jumped.message, "已获得语音授权，可以进入扫码识别设备阶段。");
+  assert.equal(jumped.detail, "请向机器人提供设备二维码图片，并保持在镜头范围内。");
   assert.equal(jumped.requestId, "req-qr");
 });
 

@@ -165,8 +165,8 @@ function buildDialogCopy(event: RobotInspectionEvent & { event: DialogInspection
     case "waiting_for_qr":
       return {
         phase: "waiting_for_qr",
-        message: "请等待机器人进行设备识别。",
-        detail: "已获得语音授权，正在进入二维码扫描流程。",
+        message: "已获得语音授权，可以进入扫码识别设备阶段。",
+        detail: "请向机器人提供设备二维码图片，并保持在镜头范围内。",
       };
     case "qr_detected":
       return {
@@ -307,7 +307,7 @@ export async function retryStoredInspectionRequest(
     onSuccess: (event: RobotInspectionEvent) => void,
   ) => Promise<void>,
 ) {
-  if (!canRetryInspectionRequest(dialogState, request)) {
+  if (!canRetryInspectionRequest(dialogState, request) || request === null) {
     return false;
   }
 

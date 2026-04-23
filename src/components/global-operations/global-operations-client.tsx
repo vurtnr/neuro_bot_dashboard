@@ -9,10 +9,17 @@ import {
   type GlobalSitePoint,
 } from "@/app/global-operations/data";
 import { GlobalAlertTicker } from "@/components/global-operations/global-alert-ticker";
+import type { AbnormalWorkOrderStatus } from "@/components/global-operations/abnormal-work-order-card";
+import { reduceAbnormalWorkOrderState } from "@/components/global-operations/abnormal-work-order-state";
 import { GlobalHeader } from "@/components/global-operations/global-header";
 import { GlobalMapLegend } from "@/components/global-operations/global-map-legend";
 import { GlobalMapScene } from "@/components/global-operations/global-map-scene";
 import { GlobalOperationsShell } from "@/components/global-operations/global-operations-shell";
+import {
+  deriveGlobalPatrolStateFromSession,
+  isGlobalInspectionBusy,
+  type GlobalPatrolStage,
+} from "@/components/global-operations/global-patrol-state";
 import {
   getPlantCreatedConnectionLabel,
   getPlantCreatedConnectionTone,
@@ -21,6 +28,7 @@ import {
 } from "@/components/global-operations/plant-created-websocket";
 import {
   createPlannedPlantFromPayload,
+  mergePinnedPlannedPlants,
   upsertPlannedPlant,
   type PlannedPlant,
 } from "@/components/global-operations/planned-plant";
@@ -33,8 +41,15 @@ import RobotInspectionModal from "@/components/robot-inspection-modal";
 import {
   QINGHAI_SITE_ID,
   startQinghaiSitePatrol,
+  startQinghaiTechnicalSupportEscalation,
   subscribeQinghaiSitePatrolEvents,
 } from "@/lib/robot-inspection/site-patrol";
+import { buildLockedDeviceFromPatrolEvent } from "@/lib/robot-inspection/patrol-contract";
+import {
+  clearPatrolSession,
+  getPatrolSessionForSite,
+  writePatrolSession,
+} from "@/lib/robot-inspection/patrol-session";
 import {
   getPlantCreatedWebSocketUrl,
   hasRobotBaseUrl,
@@ -46,8 +61,6 @@ type GlobalOperationsClientProps = {
   points: GlobalSitePoint[];
 };
 
-type PatrolStage = "idle" | "starting" | "dispatching" | "anomaly";
-
 type ToastState = {
   tone: "info" | "critical";
   message: string;
@@ -57,12 +70,29 @@ export function GlobalOperationsClient({
   points,
 }: GlobalOperationsClientProps) {
   const router = useRouter();
-  const { beginInspection, closeDialog, dialogState } = useRobotInspection();
+  const { beginInspection, closeDialog, retryPermission, dialogState } =
+    useRobotInspection();
   const processedEventKeysRef = useRef<Set<string>>(new Set());
-  const [patrolStage, setPatrolStage] = useState<PatrolStage>("idle");
-  const [inspectionSiteId, setInspectionSiteId] = useState<string | null>(null);
-  const [anomalySiteId, setAnomalySiteId] = useState<string | null>(null);
+  const abnormalWorkOrderResetTimerRef = useRef<number | null>(null);
+  const abnormalWorkOrderStatusRef =
+    useRef<AbnormalWorkOrderStatus>("idle");
+  const toastRef = useRef<ToastState | null>(null);
+  const restoredPatrolState = deriveGlobalPatrolStateFromSession(
+    QINGHAI_SITE_ID,
+    getPatrolSessionForSite(QINGHAI_SITE_ID),
+  );
+  const [patrolStage, setPatrolStage] = useState<GlobalPatrolStage>(
+    restoredPatrolState.patrolStage,
+  );
+  const [inspectionSiteId, setInspectionSiteId] = useState<string | null>(
+    restoredPatrolState.inspectionSiteId,
+  );
+  const [anomalySiteId, setAnomalySiteId] = useState<string | null>(
+    restoredPatrolState.anomalySiteId,
+  );
   const [toast, setToast] = useState<ToastState | null>(null);
+  const [abnormalWorkOrderStatus, setAbnormalWorkOrderStatus] =
+    useState<AbnormalWorkOrderStatus>("idle");
   const [plantCreatedConnectionState, setPlantCreatedConnectionState] =
     useState<PlantCreatedConnectionState>(() =>
       getPlantCreatedWebSocketUrl() ? "connecting" : "disabled",
@@ -99,8 +129,8 @@ export function GlobalOperationsClient({
   );
 
   const summary = useMemo(
-    () => getGlobalSummary(pointsWithSimulationState),
-    [pointsWithSimulationState],
+    () => getGlobalSummary(pointsWithSimulationState, plannedPlants.length),
+    [plannedPlants.length, pointsWithSimulationState],
   );
 
   const alerts = useMemo(() => {
@@ -112,6 +142,14 @@ export function GlobalOperationsClient({
 
     return ["青海场站支架NCU N5 参数异常，已同步至场站监控平台", ...baseAlerts];
   }, [patrolStage, pointsWithSimulationState]);
+
+  useEffect(() => {
+    abnormalWorkOrderStatusRef.current = abnormalWorkOrderStatus;
+  }, [abnormalWorkOrderStatus]);
+
+  useEffect(() => {
+    toastRef.current = toast;
+  }, [toast]);
 
   const handleStartInspection = useCallback(async () => {
     setInspectionSiteId(QINGHAI_SITE_ID);
@@ -164,6 +202,46 @@ export function GlobalOperationsClient({
     [router],
   );
 
+  const handleRequestTechnicalSupport = useCallback(async () => {
+    if (abnormalWorkOrderResetTimerRef.current !== null) {
+      window.clearTimeout(abnormalWorkOrderResetTimerRef.current);
+      abnormalWorkOrderResetTimerRef.current = null;
+    }
+    setAbnormalWorkOrderStatus("sending");
+
+    try {
+      await startQinghaiTechnicalSupportEscalation();
+      setAbnormalWorkOrderStatus("sent");
+      abnormalWorkOrderResetTimerRef.current = window.setTimeout(() => {
+        abnormalWorkOrderResetTimerRef.current = null;
+        setAbnormalWorkOrderStatus("idle");
+      }, 30_000);
+      setToast({
+        tone: "info",
+        message:
+          "已通知机器人处理异常状态工单，请根据机器人语音确认是否发送给天合光能运维部门。",
+      });
+    } catch (error) {
+      setAbnormalWorkOrderStatus("error");
+      setToast({
+        tone: "critical",
+        message:
+          error instanceof Error
+            ? error.message
+            : "异常状态工单发送失败，请检查机器人桥接服务。",
+      });
+    }
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (abnormalWorkOrderResetTimerRef.current !== null) {
+        window.clearTimeout(abnormalWorkOrderResetTimerRef.current);
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
     let closedDueToError = false;
     let eventSource: EventSource | null = null;
@@ -196,6 +274,12 @@ export function GlobalOperationsClient({
       if (event.event === "patrol_anomaly_detected") {
         setPatrolStage("anomaly");
         setAnomalySiteId(event.siteId ?? QINGHAI_SITE_ID);
+        writePatrolSession({
+          requestId: event.requestId,
+          siteId: event.siteId ?? QINGHAI_SITE_ID,
+          status: "locked",
+          lockedDevice: buildLockedDeviceFromPatrolEvent(event),
+        });
         setToast({
           tone: "critical",
           message:
@@ -207,7 +291,9 @@ export function GlobalOperationsClient({
 
       if (event.event === "patrol_failed") {
         setPatrolStage("idle");
+        setInspectionSiteId(null);
         setAnomalySiteId(null);
+        clearPatrolSession(event.requestId);
         setToast({
           tone: "critical",
           message: event.message ?? "机器人巡检失败，请稍后重试。",
@@ -219,7 +305,28 @@ export function GlobalOperationsClient({
         setPatrolStage("idle");
         setInspectionSiteId(null);
         setAnomalySiteId(null);
+        clearPatrolSession(event.requestId);
         setToast(null);
+        return;
+      }
+
+      if (
+        event.event === "support_escalation_sent" ||
+        event.event === "support_escalation_cancelled"
+      ) {
+        if (abnormalWorkOrderResetTimerRef.current !== null) {
+          window.clearTimeout(abnormalWorkOrderResetTimerRef.current);
+          abnormalWorkOrderResetTimerRef.current = null;
+        }
+        const next = reduceAbnormalWorkOrderState(
+          {
+            status: abnormalWorkOrderStatusRef.current,
+            toast: toastRef.current,
+          },
+          event,
+        );
+        setAbnormalWorkOrderStatus(next.status);
+        setToast(next.toast);
       }
     };
 
@@ -323,7 +430,9 @@ export function GlobalOperationsClient({
           }
 
           setPlannedPlants((current) => {
-            const next = upsertPlannedPlant(current, plannedPlant);
+            const next = mergePinnedPlannedPlants(
+              upsertPlannedPlant(current, plannedPlant),
+            );
             writePlannedPlants(next);
             return next;
           });
@@ -397,23 +506,23 @@ export function GlobalOperationsClient({
           points={pointsWithSimulationState}
           plannedPlants={plannedPlants}
           anomalySiteId={anomalySiteId}
-          inspectionBusy={
-            patrolStage === "starting" || patrolStage === "dispatching"
-          }
+          inspectionBusy={isGlobalInspectionBusy(patrolStage)}
+          abnormalWorkOrderStatus={abnormalWorkOrderStatus}
           onStartInspection={handleStartInspection}
           onOpenAnomalyReview={handleOpenAnomalyReview}
           onOpenSiteDetail={handleOpenSiteDetail}
+          onRequestTechnicalSupport={handleRequestTechnicalSupport}
         />
       }
       legend={<GlobalMapLegend summary={summary} />}
       ticker={<GlobalAlertTicker alerts={alerts} />}
     >
       <RobotInspectionModal
-        open={dialogState.open}
-        loading={dialogState.loading}
-        message={dialogState.message}
-        error={dialogState.error}
+        dialogState={dialogState}
         onClose={closeDialog}
+        onRetryPermission={() => {
+          void retryPermission();
+        }}
       />
     </GlobalOperationsShell>
   );

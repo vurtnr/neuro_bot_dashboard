@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  getBatteryWebSocketUrl,
   getPlantCreatedWebSocketUrl,
   getRobotBaseUrl,
+  getTiandituKey,
   hasRobotBaseUrl,
-} from "./config";
+} from "./config.ts";
 
 function withRuntimeConfigWindow<T>(
   runtimeConfig: Record<string, string> | undefined,
@@ -145,6 +147,63 @@ test("ignores invalid non-websocket plant-created urls", () => {
       delete process.env.NEXT_PUBLIC_PLANT_CREATED_WS_URL;
     } else {
       process.env.NEXT_PUBLIC_PLANT_CREATED_WS_URL = previous;
+    }
+  }
+});
+
+test("returns the tianditu key from runtime config", () => {
+  const previous = process.env.NEXT_PUBLIC_TIANDITU_KEY;
+  delete process.env.NEXT_PUBLIC_TIANDITU_KEY;
+
+  try {
+    const result = withRuntimeConfigWindow(
+      {
+        NEXT_PUBLIC_TIANDITU_KEY: "runtime-tianditu-key",
+      },
+      () => getTiandituKey(),
+    );
+    assert.equal(result, "runtime-tianditu-key");
+  } finally {
+    if (previous === undefined) {
+      delete process.env.NEXT_PUBLIC_TIANDITU_KEY;
+    } else {
+      process.env.NEXT_PUBLIC_TIANDITU_KEY = previous;
+    }
+  }
+});
+
+test("returns the configured battery websocket url", () => {
+  const previous = process.env.NEXT_PUBLIC_BATTERY_WS_URL;
+  process.env.NEXT_PUBLIC_BATTERY_WS_URL = "ws://build-time.example.com/ws";
+
+  try {
+    const result = withRuntimeConfigWindow(
+      {
+        NEXT_PUBLIC_BATTERY_WS_URL: "ws://runtime.example.com/ws",
+      },
+      () => getBatteryWebSocketUrl(),
+    );
+    assert.equal(result, "ws://runtime.example.com/ws");
+  } finally {
+    if (previous === undefined) {
+      delete process.env.NEXT_PUBLIC_BATTERY_WS_URL;
+    } else {
+      process.env.NEXT_PUBLIC_BATTERY_WS_URL = previous;
+    }
+  }
+});
+
+test("falls back to the default battery websocket url when config is absent", () => {
+  const previous = process.env.NEXT_PUBLIC_BATTERY_WS_URL;
+  delete process.env.NEXT_PUBLIC_BATTERY_WS_URL;
+
+  try {
+    assert.equal(getBatteryWebSocketUrl(), "ws://172.22.3.105:3000/ws");
+  } finally {
+    if (previous === undefined) {
+      delete process.env.NEXT_PUBLIC_BATTERY_WS_URL;
+    } else {
+      process.env.NEXT_PUBLIC_BATTERY_WS_URL = previous;
     }
   }
 });

@@ -23,6 +23,7 @@ import {
   isWorkOrderResolved,
   markWorkOrderResolved,
 } from "@/lib/work-order-resolution";
+import { createUuid } from "@/lib/uuid";
 
 type DeviceDetailClientProps = {
   siteId: string;
@@ -483,7 +484,7 @@ function createMockEvidence(
   subtitle: string,
 ): CameraEvidence {
   return {
-    id: crypto.randomUUID(),
+    id: createUuid(),
     title,
     note: `机器人现场巡检抓拍，记录 ${subtitle.toLowerCase()} 状态`,
     time: formatCaptureTime(time),
@@ -544,7 +545,7 @@ function buildMockWorkOrderHistory(
       const completedAt = buildRelativeTimestamp(dayOffsets[index], 12 + index, 42);
 
       return {
-        id: crypto.randomUUID(),
+        id: createUuid(),
         orderNo: `WO-2026-${String(8200 + seed + index).padStart(4, "0")}`,
         priority: index === 0 ? "高优先级" : "中优先级",
         status: "completed",
@@ -603,7 +604,7 @@ function buildMockWorkOrderHistory(
     const completedAt = buildRelativeTimestamp(dayOffsets[index], 11 + index, 8);
 
     return {
-      id: crypto.randomUUID(),
+      id: createUuid(),
       orderNo: `WO-2026-${String(8100 + seed + index).padStart(4, "0")}`,
       priority: index === 0 ? "高优先级" : "中优先级",
       status: "completed",
@@ -1251,7 +1252,7 @@ export default function DeviceDetailClient({
 
     try {
       const response = await captureWorkOrderSnapshot({
-        requestId: crypto.randomUUID(),
+        requestId: createUuid(),
         siteId,
         nodeId,
         nodeLabel,
@@ -1268,7 +1269,7 @@ export default function DeviceDetailClient({
 
       setCameraEvidence((current) => [
         {
-          id: crypto.randomUUID(),
+          id: createUuid(),
           title: `${nodeLabel} 抓拍`,
           note: `机器人回传抓拍帧，分辨率 ${response.width ?? "--"}x${response.height ?? "--"}`,
           time: readableTime,
@@ -1307,7 +1308,7 @@ export default function DeviceDetailClient({
 
     try {
       const response = await manualAngleControl({
-        requestId: crypto.randomUUID(),
+        requestId: createUuid(),
         siteId,
         nodeId,
         nodeLabel,
@@ -1386,7 +1387,7 @@ export default function DeviceDetailClient({
     const resolvedEvidence = cameraEvidence;
 
     const submittedRecord: WorkOrderRecord = {
-      id: crypto.randomUUID(),
+      id: createUuid(),
       orderNo: currentOrderMeta.orderNo,
       priority: currentOrderMeta.priority,
       status: "completed",
@@ -1405,7 +1406,7 @@ export default function DeviceDetailClient({
 
     try {
       await completeWorkOrder({
-        requestId: crypto.randomUUID(),
+        requestId: createUuid(),
         siteId,
         nodeId,
         nodeLabel,

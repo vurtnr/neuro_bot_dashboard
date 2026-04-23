@@ -21,11 +21,21 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import RobotInspectionModal from "@/components/robot-inspection-modal";
 import RobotPatrolLockCard from "@/components/robot-patrol-lock-card";
 import RobotPatrolModal from "@/components/robot-patrol-modal";
+import { getBatteryWebSocketUrl } from "@/lib/robot-inspection/config";
 import { subscribeQinghaiSitePatrolEvents } from "@/lib/robot-inspection/site-patrol";
 import { getResolvedWorkOrderNodeIds } from "@/lib/work-order-resolution";
 import { useRobotInspection } from "@/lib/robot-inspection/use-robot-inspection";
 import { useRobotPatrol } from "@/lib/robot-inspection/use-robot-patrol";
 import { generateMinuteLevelData } from "@/utils";
+import {
+  appendBatteryTelemetryPoint,
+  parseBatteryTelemetryMessage,
+  type BatteryTelemetryPoint,
+} from "./battery-telemetry";
+import {
+  reduceSitePatrolOverlayState,
+  type SiteToastState,
+} from "./site-patrol-overlay";
 import SiteTopologyFlow from "./site-topology-flow";
 import type {
   PatrolLockedDevice,
@@ -34,6 +44,11 @@ import type {
 
 type ThemeMode = "day" | "sunset";
 type DeviceStatus = "normal" | "warning" | "fault" | "offline";
+type BatteryConnectionState =
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "error";
 
 type CabinetMetrics = {
   temperature: number;
@@ -474,6 +489,267 @@ function createTrendOptions({
   };
 }
 
+function getBatteryConnectionLabel(state: BatteryConnectionState) {
+  switch (state) {
+    case "connected":
+      return "实时流已连接";
+    case "reconnecting":
+      return "实时流重连中";
+    case "error":
+      return "实时流异常";
+    default:
+      return "实时流连接中";
+  }
+}
+
+function createBatteryRealtimeOptions({
+  points,
+  mode,
+  connectionState,
+}: {
+  points: BatteryTelemetryPoint[];
+  mode: ThemeMode;
+  connectionState: BatteryConnectionState;
+}): Highcharts.Options {
+  const isDay = mode === "day";
+  const categories = points.map((point) => point.timeLabel);
+  const tickPositions =
+    categories.length > 1
+      ? Array.from(
+          new Set([0, Math.floor((categories.length - 1) / 2), categories.length - 1]),
+        )
+      : [];
+  const latestPoint = points.at(-1);
+  const statusLabel = latestPoint
+    ? latestPoint.isCharging
+      ? "充电中"
+      : latestPoint.isDischarging
+        ? "放电中"
+        : latestPoint.status
+    : "等待数据";
+  const subtitleText = `${getBatteryConnectionLabel(connectionState)}<br/>${
+    latestPoint ? `最新采样 ${latestPoint.timeLabel} · ${statusLabel}` : "最近 5 分钟滚动窗口"
+  }`;
+
+  return {
+    chart: {
+      type: "line",
+      height: 260,
+      backgroundColor: "transparent",
+      spacing: [10, 8, 8, 8],
+      animation: false,
+    },
+    title: { text: undefined },
+    subtitle: {
+      text: subtitleText,
+      useHTML: true,
+      align: "left",
+      verticalAlign: "top",
+      y: 4,
+      style: {
+        color: isDay ? "#64748b" : "#9a3412",
+        fontSize: "11px",
+        lineHeight: "16px",
+      },
+    },
+    credits: { enabled: false },
+    legend: {
+      enabled: true,
+      align: "center",
+      verticalAlign: "bottom",
+      itemStyle: {
+        color: isDay ? "#334155" : "#7c2d12",
+        fontSize: "10px",
+        fontWeight: "500",
+      },
+      symbolRadius: 2,
+      symbolWidth: 14,
+    },
+    xAxis: {
+      categories,
+      tickPositions,
+      tickLength: 0,
+      lineColor: isDay ? "rgba(148,163,184,0.35)" : "rgba(251,146,60,0.32)",
+      labels: {
+        style: {
+          color: isDay ? "#64748b" : "#9a3412",
+          fontSize: "10px",
+        },
+      },
+    },
+    yAxis: [
+      {
+        top: "0%",
+        height: "42%",
+        min: 0,
+        max: 100,
+        title: {
+          text: "SOC",
+          style: {
+            color: isDay ? "#16a34a" : "#ea580c",
+            fontSize: "10px",
+          },
+        },
+        gridLineColor: isDay
+          ? "rgba(100,116,139,0.14)"
+          : "rgba(217,119,6,0.16)",
+        labels: {
+          format: "{value}%",
+          style: {
+            color: isDay ? "#64748b" : "#9a3412",
+            fontSize: "10px",
+          },
+        },
+      },
+      {
+        top: "0%",
+        height: "42%",
+        opposite: true,
+        title: {
+          text: "功率",
+          style: {
+            color: isDay ? "#0284c7" : "#f97316",
+            fontSize: "10px",
+          },
+        },
+        gridLineWidth: 0,
+        labels: {
+          style: {
+            color: isDay ? "#64748b" : "#9a3412",
+            fontSize: "10px",
+          },
+        },
+      },
+      {
+        top: "50%",
+        height: "20%",
+        offset: 0,
+        title: {
+          text: "电压",
+          style: {
+            color: isDay ? "#6366f1" : "#d97706",
+            fontSize: "10px",
+          },
+        },
+        gridLineColor: isDay
+          ? "rgba(129,140,248,0.12)"
+          : "rgba(245,158,11,0.16)",
+        labels: {
+          style: {
+            color: isDay ? "#64748b" : "#9a3412",
+            fontSize: "10px",
+          },
+        },
+      },
+      {
+        top: "76%",
+        height: "18%",
+        offset: 0,
+        title: {
+          text: "温度",
+          style: {
+            color: isDay ? "#f97316" : "#ea580c",
+            fontSize: "10px",
+          },
+        },
+        gridLineColor: isDay
+          ? "rgba(251,146,60,0.12)"
+          : "rgba(234,88,12,0.16)",
+        labels: {
+          style: {
+            color: isDay ? "#64748b" : "#9a3412",
+            fontSize: "10px",
+          },
+        },
+      },
+    ],
+    tooltip: {
+      shared: true,
+      backgroundColor: isDay
+        ? "rgba(255,255,255,0.96)"
+        : "rgba(255,247,237,0.96)",
+      borderColor: isDay
+        ? "rgba(14,116,144,0.28)"
+        : "rgba(249,115,22,0.28)",
+      shadow: false,
+    },
+    plotOptions: {
+      series: {
+        animation: false,
+        marker: {
+          enabled: false,
+        },
+        states: {
+          hover: {
+            lineWidthPlus: 0,
+          },
+        },
+      },
+      areaspline: {
+        fillOpacity: 0.18,
+      },
+    },
+    series: [
+      {
+        type: "spline",
+        name: "SOC (%)",
+        data: points.map((point) => point.soc),
+        yAxis: 0,
+        color: isDay ? "#22c55e" : "#ea580c",
+        lineWidth: 2.6,
+        zIndex: 5,
+      },
+      {
+        type: "areaspline",
+        name: "有功功率",
+        data: points.map((point) =>
+          point.isCharging && !point.isDischarging
+            ? -point.activePower
+            : point.activePower,
+        ),
+        yAxis: 1,
+        color: isDay ? "rgba(14,165,233,0.86)" : "rgba(249,115,22,0.82)",
+        lineWidth: 2,
+        zIndex: 4,
+      },
+      {
+        type: "line",
+        name: "最高电压 (V)",
+        data: points.map((point) => point.maxVoltage),
+        yAxis: 2,
+        color: isDay ? "#6366f1" : "#d97706",
+        lineWidth: 1.8,
+      },
+      {
+        type: "line",
+        name: "最低电压 (V)",
+        data: points.map((point) => point.minVoltage),
+        yAxis: 2,
+        color: isDay ? "#a5b4fc" : "#fdba74",
+        lineWidth: 1.6,
+        dashStyle: "ShortDash",
+      },
+      {
+        type: "line",
+        name: "最高温度 (°C)",
+        data: points.map((point) => point.maxTemp),
+        yAxis: 3,
+        color: isDay ? "#f97316" : "#ea580c",
+        lineWidth: 1.8,
+      },
+      {
+        type: "line",
+        name: "最低温度 (°C)",
+        data: points.map((point) => point.minTemp),
+        yAxis: 3,
+        color: isDay ? "#fdba74" : "#fb923c",
+        lineWidth: 1.6,
+        dashStyle: "ShortDash",
+      },
+    ],
+  };
+}
+
 function NcuNode({ data }: NodeProps<Node<TopologyNodeData>>) {
   const status = data.status ?? "normal";
   const palette = STATUS_COLORS[status];
@@ -746,12 +1022,6 @@ interface Site2DDashboardData {
   arbitrageIncome: number;
 }
 
-type SiteToastState = {
-  tone: "info" | "critical";
-  message: string;
-  actionable?: boolean;
-};
-
 export default function SiteTopology2D({
   dashboardData,
 }: {
@@ -759,7 +1029,8 @@ export default function SiteTopology2D({
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { beginInspection, closeDialog, dialogState } = useRobotInspection();
+  const { beginInspection, closeDialog, retryPermission, dialogState } =
+    useRobotInspection();
   const routeParams = useParams<{ siteId: string }>();
   const siteId = routeParams.siteId;
   const reviewNodeId = searchParams.get("reviewNodeId");
@@ -780,6 +1051,11 @@ export default function SiteTopology2D({
   const [cabinetPanelOpen, setCabinetPanelOpen] = useState(true);
   const [blockedNodeMessage, setBlockedNodeMessage] = useState("");
   const [siteToast, setSiteToast] = useState<SiteToastState | null>(null);
+  const [batteryTelemetryHistory, setBatteryTelemetryHistory] = useState<
+    BatteryTelemetryPoint[]
+  >([]);
+  const [batteryConnectionState, setBatteryConnectionState] =
+    useState<BatteryConnectionState>("connecting");
   const [simulatedReviewNodeId, setSimulatedReviewNodeId] = useState<
     string | null
   >(null);
@@ -793,6 +1069,9 @@ export default function SiteTopology2D({
   const topologyPanelRef = useRef<HTMLElement | null>(null);
   const blockedNodeTimerRef = useRef<number | null>(null);
   const toastTimerRef = useRef<number | null>(null);
+  const siteToastRef = useRef<SiteToastState | null>(null);
+  const simulatedReviewNodeIdRef = useRef<string | null>(null);
+  const highlightedNodeIdRef = useRef<string | null>(null);
   const reactFlowInstanceRef = useRef<ReactFlowInstance<
     Node<TopologyNodeData>,
     Edge
@@ -925,6 +1204,90 @@ export default function SiteTopology2D({
   );
 
   useEffect(() => {
+    siteToastRef.current = siteToast;
+  }, [siteToast]);
+
+  useEffect(() => {
+    simulatedReviewNodeIdRef.current = simulatedReviewNodeId;
+  }, [simulatedReviewNodeId]);
+
+  useEffect(() => {
+    highlightedNodeIdRef.current = highlightedNodeId;
+  }, [highlightedNodeId]);
+
+  useEffect(() => {
+    const socketUrl = getBatteryWebSocketUrl();
+    if (!socketUrl) {
+      return;
+    }
+
+    let socket: WebSocket | null = null;
+    let reconnectTimer: number | null = null;
+    let reconnectAttempt = 0;
+    let manuallyClosed = false;
+
+    const connect = () => {
+      if (manuallyClosed) {
+        return;
+      }
+
+      setBatteryConnectionState(
+        reconnectAttempt === 0 ? "connecting" : "reconnecting",
+      );
+
+      socket = new WebSocket(socketUrl);
+
+      socket.addEventListener("open", () => {
+        reconnectAttempt = 0;
+        setBatteryConnectionState("connected");
+      });
+
+      socket.addEventListener("message", (event) => {
+        if (typeof event.data !== "string") {
+          return;
+        }
+
+        const nextPoint = parseBatteryTelemetryMessage(event.data);
+        if (!nextPoint) {
+          return;
+        }
+
+        setBatteryTelemetryHistory((current) =>
+          appendBatteryTelemetryPoint(current, nextPoint),
+        );
+      });
+
+      socket.addEventListener("error", () => {
+        setBatteryConnectionState("error");
+      });
+
+      socket.addEventListener("close", () => {
+        if (manuallyClosed) {
+          return;
+        }
+
+        setBatteryConnectionState("reconnecting");
+        const delay = Math.min(1000 * 2 ** reconnectAttempt, 10_000);
+        reconnectAttempt += 1;
+        reconnectTimer = window.setTimeout(() => {
+          reconnectTimer = null;
+          connect();
+        }, delay);
+      });
+    };
+
+    connect();
+
+    return () => {
+      manuallyClosed = true;
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+      }
+      socket?.close();
+    };
+  }, []);
+
+  useEffect(() => {
     const pushSiteToast = (nextToast: SiteToastState) => {
       setSiteToast(nextToast);
       if (toastTimerRef.current !== null) {
@@ -936,35 +1299,38 @@ export default function SiteTopology2D({
       }, 4200);
     };
 
+    const clearSiteToast = () => {
+      setSiteToast(null);
+      if (toastTimerRef.current !== null) {
+        window.clearTimeout(toastTimerRef.current);
+        toastTimerRef.current = null;
+      }
+    };
+
     const applyPatrolEvent = (event: RobotInspectionEvent) => {
-      if (event.siteId !== siteId) {
+      const currentOverlayState = {
+        siteToast: siteToastRef.current,
+        simulatedReviewNodeId: simulatedReviewNodeIdRef.current,
+        highlightedNodeId: highlightedNodeIdRef.current,
+      };
+      const nextOverlayState = reduceSitePatrolOverlayState(
+        currentOverlayState,
+        event,
+        siteId,
+      );
+
+      if (nextOverlayState === currentOverlayState) {
         return;
       }
 
-      if (event.event === "patrol_started") {
-        setSimulatedReviewNodeId(null);
-        setHighlightedNodeId(null);
-        pushSiteToast({
-          tone: "info",
-          message:
-            event.message ??
-            "机器人消息：已接收巡检任务，当前进入青海场站巡检模式",
-        });
-        return;
-      }
+      setSimulatedReviewNodeId(nextOverlayState.simulatedReviewNodeId);
+      setHighlightedNodeId(nextOverlayState.highlightedNodeId);
 
-      if (event.event !== "patrol_anomaly_detected") {
-        return;
+      if (nextOverlayState.siteToast) {
+        pushSiteToast(nextOverlayState.siteToast);
+      } else {
+        clearSiteToast();
       }
-
-      setSimulatedReviewNodeId(event.nodeId ?? null);
-      pushSiteToast({
-        tone: "critical",
-        message:
-          event.message ??
-          "发生巡检事件：检测到青海场站支架NCU N5 参数异常，已同步至场站监控，点击查看详细信息。",
-        actionable: true,
-      });
     };
 
     const eventSource = subscribeQinghaiSitePatrolEvents(
@@ -1085,9 +1451,6 @@ export default function SiteTopology2D({
   }, [dashboardData.loadPowerMw]);
   const inverterOnlineRate = dashboardData.hasWarning ? 95.1 : 99.2;
   const batteryClusterOnlineRate = dashboardData.hasWarning ? 93.7 : 98.3;
-  const workOrderData = dashboardData.hasWarning
-    ? { pending: 8, processing: 5, closed: 17 }
-    : { pending: 3, processing: 2, closed: 24 };
 
   const overviewCards = useMemo(
     () => [
@@ -1558,58 +1921,22 @@ export default function SiteTopology2D({
         } as Highcharts.Options,
       },
       {
-        title: "运维工单",
-        options: {
-          chart: {
-            type: "bar",
-            height: 220,
-            backgroundColor: "transparent",
-            spacing: [8, 8, 8, 8],
-          },
-          title: { text: undefined },
-          credits: { enabled: false },
-          legend: { enabled: false },
-          xAxis: {
-            categories: ["待处理", "处理中", "已完成"],
-            labels: {
-              style: { color: isDay ? "#475569" : "#9a3412", fontSize: "11px" },
-            },
-          },
-          yAxis: {
-            title: { text: undefined },
-            labels: {
-              style: { color: isDay ? "#64748b" : "#9a3412", fontSize: "10px" },
-            },
-          },
-          tooltip: { valueSuffix: " 单" },
-          series: [
-            {
-              type: "bar",
-              data: [
-                workOrderData.pending,
-                workOrderData.processing,
-                workOrderData.closed,
-              ],
-              colorByPoint: true,
-              colors: [
-                isDay ? "#f59e0b" : "#fb923c",
-                isDay ? "#0ea5e9" : "#f97316",
-                isDay ? "#22c55e" : "#fdba74",
-              ],
-            },
-          ],
-        } as Highcharts.Options,
+        title: "储能簇实时轨迹",
+        options: createBatteryRealtimeOptions({
+          points: batteryTelemetryHistory,
+          mode: "day",
+          connectionState: batteryConnectionState,
+        }),
       },
     ],
     [
+      batteryConnectionState,
+      batteryTelemetryHistory,
       batteryClusterOnlineRate,
       inverterOnlineRate,
       inverterSeries,
       inverterSeriesError,
       isDay,
-      workOrderData.closed,
-      workOrderData.pending,
-      workOrderData.processing,
     ],
   );
 
@@ -2054,11 +2381,11 @@ export default function SiteTopology2D({
         className={`h-screen w-screen overflow-hidden bg-gradient-to-br ${pageTheme.shell} text-slate-900`}
       >
         <RobotInspectionModal
-          open={dialogState.open}
-          loading={dialogState.loading}
-          message={dialogState.message}
-          error={dialogState.error}
+          dialogState={dialogState}
           onClose={closeDialog}
+          onRetryPermission={() => {
+            void retryPermission();
+          }}
         />
         <RobotPatrolModal
           open={patrolModalOpen}
@@ -2287,7 +2614,14 @@ export default function SiteTopology2D({
                   device={lockedDevice}
                   message={patrolState.message}
                   error={patrolState.error}
-                  scanPending={dialogState.loading}
+                  scanPending={
+                    dialogState.open &&
+                    ![
+                      "permission_denied",
+                      "permission_unresolved",
+                      "failed",
+                    ].includes(dialogState.phase)
+                  }
                   onConnect={beginLockedDeviceInspection}
                 />
                 {topologyView === "2d" ? (

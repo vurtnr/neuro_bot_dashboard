@@ -14,7 +14,10 @@ export type RobotInspectionEventType =
   | "patrol_started"
   | "patrol_anomaly_detected"
   | "patrol_completed"
-  | "patrol_failed";
+  | "patrol_failed"
+  | "support_escalation_requested"
+  | "support_escalation_sent"
+  | "support_escalation_cancelled";
 
 export type RobotInspectionEvent = {
   requestId: string;
