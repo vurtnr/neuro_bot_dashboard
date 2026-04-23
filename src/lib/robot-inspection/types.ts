@@ -1,5 +1,10 @@
 export type RobotInspectionEventType =
   | "accepted"
+  | "permission_prompting"
+  | "permission_listening"
+  | "permission_retrying"
+  | "permission_denied"
+  | "permission_unresolved"
   | "waiting_for_qr"
   | "qr_detected"
   | "ble_connecting"
