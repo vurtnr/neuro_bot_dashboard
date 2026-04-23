@@ -131,3 +131,65 @@ test("ignores impossible scan transitions that skip required earlier phases", ()
 
   assert.deepEqual(skipped, baseState);
 });
+
+test("rejects scan events while idle", () => {
+  const idleResult = reduceInspectionDialogState(INITIAL_STATE, {
+    requestId: "req-idle",
+    event: "waiting_for_qr",
+  } satisfies RobotInspectionEvent);
+
+  assert.deepEqual(idleResult, INITIAL_STATE);
+});
+
+test("rejects further dialog transitions after permission_denied", () => {
+  const deniedState = reduceInspectionDialogState(baseState, {
+    requestId: "req-denied",
+    event: "permission_denied",
+    reason: "user_refused",
+  } satisfies RobotInspectionEvent);
+
+  const rejected = reduceInspectionDialogState(deniedState, {
+    requestId: "req-after-denied",
+    event: "waiting_for_qr",
+  } satisfies RobotInspectionEvent);
+
+  assert.equal(rejected.phase, "permission_denied");
+  assert.equal(rejected.message, "用户已明确拒绝本次设备数据获取请求。");
+  assert.equal(rejected.detail, "你可以结束本次复核，或重新请求机器人进行语音确认。");
+  assert.equal(rejected.requestId, "req-denied");
+});
+
+test("rejects further dialog transitions after permission_unresolved", () => {
+  const unresolvedState = reduceInspectionDialogState(baseState, {
+    requestId: "req-unresolved",
+    event: "permission_unresolved",
+    reason: "permission_timeout",
+  } satisfies RobotInspectionEvent);
+
+  const rejected = reduceInspectionDialogState(unresolvedState, {
+    requestId: "req-after-unresolved",
+    event: "waiting_for_qr",
+  } satisfies RobotInspectionEvent);
+
+  assert.equal(rejected.phase, "permission_unresolved");
+  assert.equal(rejected.message, "本次未获得明确语音授权。");
+  assert.equal(rejected.detail, "系统已结束本次复核尝试，请返回异常待复核状态后重新发起。");
+  assert.equal(rejected.requestId, "req-unresolved");
+});
+
+test("rejects invalid later-phase jumps inside the scan flow", () => {
+  const waitingForQr = reduceInspectionDialogState(baseState, {
+    requestId: "req-qr",
+    event: "waiting_for_qr",
+  } satisfies RobotInspectionEvent);
+
+  const jumped = reduceInspectionDialogState(waitingForQr, {
+    requestId: "req-query",
+    event: "querying_device",
+  } satisfies RobotInspectionEvent);
+
+  assert.equal(jumped.phase, "waiting_for_qr");
+  assert.equal(jumped.message, "请等待机器人进行设备识别。");
+  assert.equal(jumped.detail, "已获得语音授权，正在进入二维码扫描流程。");
+  assert.equal(jumped.requestId, "req-qr");
+});

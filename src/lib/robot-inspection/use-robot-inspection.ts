@@ -335,13 +335,10 @@ export function useRobotInspection() {
 
       const requestId = createRequestId();
 
-      setDialogState({
-        open: true,
-        phase: "requesting_permission",
-        message: "机器人正在请求语音授权。",
-        detail: "请等待机器人语音询问用户是否可以获取该设备数据。",
+      setDialogState(reduceInspectionDialogState(INITIAL_STATE, {
         requestId,
-      });
+        event: "accepted",
+      }));
 
       try {
         eventSourceRef.current = subscribeInspectionEvents(
